@@ -395,6 +395,17 @@ def kill_pid(pid: int, grace: float = 5.0) -> bool:
     return not pid_alive(pid)
 
 
+def port_available(port: int, host: str = "127.0.0.1") -> bool:
+    """True when a TCP port can be bound now (no live listener)."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            sock.bind((host, port))
+            return True
+        except OSError:
+            return False
+
+
 def kill_process_group(pgid: int, grace: float = 5.0) -> bool:
     """SIGTERM then SIGKILL to an entire process group (spec 4.9)."""
     if pgid <= 1:

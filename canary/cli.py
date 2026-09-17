@@ -246,12 +246,13 @@ def cmd_init(args: argparse.Namespace) -> int:
     log = Log(cfg)
     env_lines = [f"HARNESS_API_KEY={os.environ.get('HARNESS_API_KEY') or secrets.token_hex(16)}"]
     main = cfg.role("main") or {}
-    if main.get("base_url"):
-        env_lines.append(f"HARNESS_MODEL_BASE_URL={main['base_url']}")
-    if main.get("model"):
-        env_lines.append(f"HARNESS_MODEL_NAME={main['model']}")
-    if main.get("context_length"):
-        env_lines.append(f"HARNESS_MODEL_CONTEXT_LENGTH={main['context_length']}")
+    if main.get("provider") not in (None, "mock"):
+        if main.get("base_url"):
+            env_lines.append(f"HARNESS_MODEL_BASE_URL={main['base_url']}")
+        if main.get("model"):
+            env_lines.append(f"HARNESS_MODEL_NAME={main['model']}")
+        if main.get("context_length"):
+            env_lines.append(f"HARNESS_MODEL_CONTEXT_LENGTH={main['context_length']}")
     key_env = main.get("api_key_env") or "HARNESS_MODEL_API_KEY"
     key_value = os.environ.get(key_env)
     if key_value:

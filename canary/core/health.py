@@ -41,6 +41,7 @@ from .util import (
     mono,
     pid_alive,
     pid_start_time,
+    port_available,
     read_json,
     short_sha,
     truncate,
@@ -114,6 +115,9 @@ class Ports:
                 meta = leases.get(key)
                 if meta and pid_alive(int(meta.get("pid") or 0),
                                      meta.get("pid_start_time")):
+                    continue
+                if not port_available(port):
+                    self.log.warn("canary_port_occupied", port=port)
                     continue
                 leases[key] = {
                     "pid": pid or os.getpid(),
@@ -320,8 +324,21 @@ class Health:
         return sha.stdout.strip() or None
 
     def green_tags(self) -> list[str]:
-        result = self._git("tag", "-l", "green/*")
-        return sorted(result.stdout.split())
+        """Green tags oldest -> newest.
+
+        Ordered by tag creation time: zero-padded stamps alone cannot
+        disambiguate two releases published in the same UTC second.
+        """
+        result = self._git(
+            "for-each-ref",
+            "--sort=creatordate",
+            "--format=%(refname:short)",
+            "refs/tags/green/*",
+        )
+        tags = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+        if tags:
+            return tags
+        return sorted(self._git("tag", "-l", "green/*").stdout.split())
 
     def staging_clean(self) -> bool:
         result = self._git("status", "--porcelain")
@@ -530,7 +547,8 @@ class Health:
         return {"ok": True, "op": "publish", "release_id": release_id,
                 "commit_sha": sha, "tag": tag,
                 "eval": gate.get("eval", {}),
-                "promoted": gate.get("promoted", False)}
+                "promoted": gate.get("promoted", False),
+                "port": gate.get("port"), "child_pid": gate.get("child_pid")}
 
     def _do_revert(self, lock: FileLock, release_id: str | None,
                    motivation: str | None, session_id: str | None,
@@ -541,24 +559,25 @@ class Health:
             if candidate.is_dir():
                 target = candidate
         if target is None:
-            latest = self.last_green_sha()
-            if latest is None:
-                return {"ok": False, "op": "revert", "error": "no green tag to revert to"}
             tags = self.green_tags()
-            match = None
-            for tag in tags:
-                if release_id and release_id in tag:
-                    match = tag
-            tag = match or (tags[-1] if tags else None)
-            if tag is None:
+            if not tags:
                 return {"ok": False, "op": "revert", "error": "no green tag to revert to"}
-            release_name = tag[len("green/"):]
+            names = [tag[len("green/"):] for tag in tags]
+            current = self.current_release()
+            if current is not None and current.name in names:
+                older = names[: names.index(current.name)]
+                if not older:
+                    return {"ok": True, "op": "revert", "release_id": current.name,
+                            "note": "already serving this release", "promoted": False}
+                release_name = older[-1]
+            else:
+                release_name = names[-1]
             target = self.releases_dir / release_name
             if not target.is_dir():
-                commit = self._git("rev-list", "-n", "1", tag).stdout.strip()
+                commit = self._git("rev-list", "-n", "1", f"green/{release_name}").stdout.strip()
                 if not commit:
                     return {"ok": False, "op": "revert",
-                            "error": f"green tag {tag} has no commit"}
+                            "error": f"green tag green/{release_name} has no commit"}
                 target = self._build_release(commit, release_name)
         if self.current_release() == target:
             return {"ok": True, "op": "revert", "release_id": target.name,
@@ -701,13 +720,14 @@ class Health:
         self.log.health_probe("canary_spawn", "ok", 0,
                               f"pid={child.pid} port={port}")
 
-        probe = self.probe_child(port, probe_timeout)
+        probe = self.probe_child(port, probe_timeout, api_key=env.get("HARNESS_API_KEY"))
         if not probe.get("ok"):
             kill_process_group(child.pid)
             self.ports.free(port)
             self._canary = {}
             return {"ok": False, "error": probe.get("error", "probe failed"),
                     "port": port, "child_pid": child.pid,
+                    "exit_code": child.poll(),
                     "log_tail": self._log_tail(log_path)}
 
         eval_result: dict[str, Any] = {"enabled": False}
@@ -759,8 +779,9 @@ class Health:
                 "port": port, "child_pid": child.pid, "promoted": promoted,
                 "eval": eval_result}
 
-    def probe_child(self, port: int, timeout: float = 30.0) -> dict[str, Any]:
-        key = os.environ.get("HARNESS_API_KEY", "")
+    def probe_child(self, port: int, timeout: float = 30.0,
+                    api_key: str | None = None) -> dict[str, Any]:
+        key = api_key if api_key is not None else os.environ.get("HARNESS_API_KEY", "")
         headers = {"Authorization": f"Bearer {key}"} if key else {}
         base = f"http://127.0.0.1:{port}"
         deadline = mono() + timeout
