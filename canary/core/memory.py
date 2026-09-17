@@ -540,26 +540,24 @@ class Memory:
         """Flag contradicting/superseding pairs; append up to 2 extra entries."""
         present = {h.entry.id for h in hits}
         extra: list[Entry] = []
+        extra_ids: set[str] = set()
         related: set[str] = set()
-        for hit in list(hits):
-            rel = hit.entry.relations or {}
+        for entry in by_id.values():
+            rel = entry.relations or {}
             for kind in ("contradicts", "supersedes"):
                 for other_id in rel.get(kind, []):
-                    if other_id == hit.entry.id:
+                    if other_id == entry.id or other_id not in by_id:
                         continue
-                    related.add(hit.entry.id)
+                    if entry.id not in present and other_id not in present:
+                        continue
+                    related.add(entry.id)
                     related.add(other_id)
-                    if other_id in present or other_id not in by_id or other_id in related:
-                        continue
-                    if any(e.id == other_id for e in extra):
-                        continue
-                    other = by_id[other_id]
-                    other.extra.setdefault("_conflict", kind)
-                    extra.append(other)
-                    if len(extra) >= 2:
-                        break
-                if len(extra) >= 2:
-                    break
+                    if entry.id not in present and entry.id not in extra_ids and len(extra) < 2:
+                        extra.append(entry)
+                        extra_ids.add(entry.id)
+                    if other_id not in present and other_id not in extra_ids and len(extra) < 2:
+                        extra.append(by_id[other_id])
+                        extra_ids.add(other_id)
         for hit in hits:
             if hit.entry.id in related:
                 hit.entry.extra.setdefault("_conflict", "relation")

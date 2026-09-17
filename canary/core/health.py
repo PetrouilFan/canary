@@ -480,6 +480,12 @@ class Health:
         message = "agent: " + (motivation or "self-modification")
         if session_id:
             message += f" [session {session_id}]"
+        add = self._git("add", "-A", "--", *paths)
+        if add.returncode != 0:
+            self._reset_staging()
+            self._clear_state()
+            return {"ok": False, "op": "publish", "error": "git add failed",
+                    "log_tail": truncate(add.stderr, 2000)}
         commit = self._git("commit", "-q", "-m", message, "--", *paths)
         if commit.returncode != 0:
             self._reset_staging()
@@ -610,7 +616,7 @@ class Health:
             raise RuntimeError(f"git archive failed: {archive.stderr}")
         ensure_dir(release_dir)
         with tarfile.open(tar_path) as tar:
-            tar.extractall(release_dir)  # noqa: S202 - trusted local archive
+            tar.extractall(release_dir, filter="fully_trusted")  # noqa: S202 - own archive
         tar_path.unlink(missing_ok=True)
         self.log.info("release_built", release_id=release_id, sha=sha)
         return release_dir

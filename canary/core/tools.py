@@ -392,7 +392,9 @@ class MemoryConsolidateTool(Tool):
     profiles = ["memory"]
 
     def __call__(self, **_: Any) -> str:
-        report = self.harness.memory.consolidate(self.harness.models.client_for("compression"))
+        report = self.harness.memory.consolidate(
+            model_client=self.harness.models.client_for("compression")
+        )
         if report.get("skipped"):
             return f"skipped: {report['skipped']}"
         return (

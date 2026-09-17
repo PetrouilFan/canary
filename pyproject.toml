@@ -57,3 +57,7 @@ known-first-party = ["canary"]
 [tool.pytest.ini_options]
 timeout = 120
 testpaths = ["tests"]
+addopts = "-m 'not integration'"
+markers = [
+    "integration: spawns processes/servers; excluded from staging preflight",
+]
