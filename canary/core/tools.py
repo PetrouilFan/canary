@@ -8,6 +8,7 @@ hot-reloaded with the old version kept live on failure.
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -25,6 +26,16 @@ from .util import atomic_write_text, ensure_dir, truncate
 MAX_RESULT_CHARS = 200_000
 READ_MAX_CHARS = 100_000
 SPILL_HINT = "output truncated"
+
+
+def _text(result: Any) -> str:
+    """Render a tool result: strings pass through, structures become JSON."""
+    if isinstance(result, str):
+        return result
+    try:
+        return json.dumps(result, indent=2, default=str)
+    except (TypeError, ValueError):
+        return str(result)
 
 
 class Tool:
@@ -264,7 +275,7 @@ class ProposeTool(Tool):
     profiles = ["self-modification"]
 
     def __call__(self, patch: str, motivation: str | None = None, **_: Any) -> str:
-        return str(self.harness.propose(patch, motivation=motivation))
+        return _text(self.harness.propose(patch, motivation=motivation))
 
 
 class RevertTool(Tool):
@@ -282,7 +293,7 @@ class RevertTool(Tool):
     profiles = ["self-modification"]
 
     def __call__(self, release_id: str | None = None, **_: Any) -> str:
-        return str(self.harness.revert(release_id))
+        return _text(self.harness.revert(release_id))
 
 
 class CompressTool(Tool):
@@ -297,7 +308,7 @@ class CompressTool(Tool):
     profiles = ["context"]
 
     def __call__(self, focus: str | None = None, **_: Any) -> str:
-        return str(self.harness.compress_current(focus))
+        return _text(self.harness.compress_current(focus))
 
 
 class MemorySearchTool(Tool):
@@ -478,7 +489,7 @@ class TaskTool(Tool):
     def __call__(
         self, prompt: str, name: str | None = None, tools: list[str] | None = None, **_: Any
     ) -> str:
-        return str(self.harness.spawn_worker(prompt, name=name, tools=tools))
+        return _text(self.harness.spawn_worker(prompt, name=name, tools=tools))
 
 
 class EvalsRunTool(Tool):
@@ -488,7 +499,7 @@ class EvalsRunTool(Tool):
     profiles = ["evals"]
 
     def __call__(self, **_: Any) -> str:
-        return str(self.harness.schedule_eval_job())
+        return _text(self.harness.schedule_eval_job())
 
 
 class DiagnoseRunTool(Tool):
@@ -498,7 +509,7 @@ class DiagnoseRunTool(Tool):
     profiles = ["evals"]
 
     def __call__(self, **_: Any) -> str:
-        return str(self.harness.schedule_diagnose_job())
+        return _text(self.harness.schedule_diagnose_job())
 
 
 class JobSpawnTool(Tool):
@@ -524,7 +535,7 @@ class JobSpawnTool(Tool):
         timeout_s: int | None = None,
         **_: Any,
     ) -> str:
-        return str(self.harness.jobs.spawn(command, name=name, cwd=cwd, timeout_s=timeout_s))
+        return _text(self.harness.jobs.spawn(command, name=name, cwd=cwd, timeout_s=timeout_s))
 
 
 class JobListTool(Tool):
@@ -534,7 +545,7 @@ class JobListTool(Tool):
     profiles = ["jobs"]
 
     def __call__(self, **_: Any) -> str:
-        return str(self.harness.jobs.list())
+        return _text(self.harness.jobs.list())
 
 
 class JobStatusTool(Tool):
@@ -548,7 +559,7 @@ class JobStatusTool(Tool):
     profiles = ["jobs"]
 
     def __call__(self, job_id: str, **_: Any) -> str:
-        return str(self.harness.jobs.status(job_id))
+        return _text(self.harness.jobs.status(job_id))
 
 
 class JobTailTool(Tool):
@@ -565,7 +576,7 @@ class JobTailTool(Tool):
     profiles = ["jobs"]
 
     def __call__(self, job_id: str, n: int = 50, **_: Any) -> str:
-        return str(self.harness.jobs.tail(job_id, n=n))
+        return _text(self.harness.jobs.tail(job_id, n=n))
 
 
 class JobKillTool(Tool):
@@ -579,7 +590,7 @@ class JobKillTool(Tool):
     profiles = ["jobs"]
 
     def __call__(self, job_id: str, **_: Any) -> str:
-        return str(self.harness.jobs.kill(job_id))
+        return _text(self.harness.jobs.kill(job_id))
 
 
 class JobLogTool(Tool):
@@ -593,7 +604,7 @@ class JobLogTool(Tool):
     profiles = ["jobs"]
 
     def __call__(self, job_id: str, **_: Any) -> str:
-        return str(self.harness.jobs.log(job_id))
+        return _text(self.harness.jobs.log(job_id))
 
 
 BUILTIN_TOOLS: list[type[Tool]] = [
@@ -644,6 +655,7 @@ class ToolRegistry:
         self._mtimes: dict[Path, float] = {}
         self._reload_errors: dict[str, str] = {}
         self._module_tools: dict[str, list[str]] = {}
+        self._namespaces: dict[str, types.ModuleType] = {}
         self._watcher: threading.Thread | None = None
         self._stop = threading.Event()
         self._observer: Any = None
@@ -819,6 +831,7 @@ class ToolRegistry:
             self._module_tools[name] = [t.name for t in tools]
             self._sources[name] = path
             self._source_texts[name] = source
+            self._namespaces[name] = module
             self._reload_errors.pop(name, None)
             self.log.event(
                 "extension_loaded",
@@ -861,6 +874,7 @@ class ToolRegistry:
         name = path.stem
         self._remove_module_tools(name)
         self._sources.pop(name, None)
+        self._namespaces.pop(name, None)
         self._mtimes.pop(path, None)
         self._reload_errors.pop(name, None)
         self.log.event("extension_removed", extension=name)
@@ -1012,6 +1026,10 @@ class ToolRegistry:
                 self.log.warn("extension_scan_failed", error=str(exc))
 
     # -- introspection ---------------------------------------------------
+
+    def extension_modules(self) -> dict[str, types.ModuleType]:
+        """Loaded extension namespaces (used by evals for custom checks)."""
+        return dict(self._namespaces)
 
     def info(self) -> dict[str, Any]:
         return {
