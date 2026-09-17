@@ -373,12 +373,13 @@ class Memory:
         tags: list[str] | None = None,
         entry_id: str | None = None,
         source: str = "",
-        importance: float = 0.5,
+        importance: float | None = 0.5,
         relations: dict[str, list[str]] | None = None,
     ) -> Entry:
         body = (body or "").strip()
         if not body:
             raise ValueError("memory entry body must not be empty")
+        importance = 0.5 if importance is None else importance
         entry_id = entry_id or util.slugify(body[:60]) or util.new_nonce()[:12]
         if not ENTRY_ID_RE.match(entry_id):
             entry_id = util.slugify(entry_id) or util.new_nonce()[:12]

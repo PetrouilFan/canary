@@ -210,11 +210,18 @@ class Config:
         ephemeral: bool = False,
         overrides: dict | None = None,
         load_files: bool = True,
+        workspace: str | os.PathLike[str] | None = None,
     ):
         self.overrides = copy.deepcopy(overrides or {})
         self.ephemeral = ephemeral
         self._ephemeral_dir: str | None = None
         self.pre_errors: list[str] = []
+        self.workspace: Path | None = None
+        if workspace is not None:
+            ws = Path(workspace).expanduser()
+            if not ws.is_absolute():
+                ws = Path.cwd() / ws
+            self.workspace = ws.resolve()
 
         env_root = os.environ.get("CANARY_ROOT")
         if root is not None:
@@ -401,10 +408,14 @@ class Config:
 
     @property
     def workspace_path(self) -> Path:
+        if self.workspace is not None:
+            return self.workspace
         return self.state_path / "workspace"
 
     @property
     def base_dir(self) -> Path:
+        if self.workspace is not None:
+            return self.workspace
         return self.root if self.root is not None else Path.cwd()
 
     @property
@@ -447,6 +458,7 @@ class Config:
             ephemeral=self.ephemeral,
             overrides=util.deep_merge(self.overrides, overrides),
             load_files=True,
+            workspace=self.workspace,
         )
 
 

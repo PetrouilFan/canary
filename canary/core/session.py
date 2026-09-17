@@ -257,6 +257,27 @@ class Session:
         self.state["context_usage"] = int(tokens)
         self.save_state()
 
+    # -- cancellation --------------------------------------------------------
+
+    @property
+    def cancel_flag(self) -> Path:
+        return self.dir / "cancel.flag"
+
+    def request_cancel(self) -> bool:
+        """Cross-process cancel request; the turn loop checks the flag."""
+        self.cancel_flag.write_text(util.utc_now(), encoding="utf-8")
+        self.append_event("cancel_requested", session=self.id)
+        return True
+
+    def cancel_requested(self) -> bool:
+        return self.cancel_flag.exists()
+
+    def clear_cancel(self) -> None:
+        try:
+            self.cancel_flag.unlink()
+        except FileNotFoundError:
+            pass
+
     # -- branching -----------------------------------------------------------
 
     def fork(

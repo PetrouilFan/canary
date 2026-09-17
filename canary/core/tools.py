@@ -698,6 +698,22 @@ class ToolRegistry:
         with self._lock:
             self._tools.pop(name, None)
 
+    def restrict(self, names: list[str] | None) -> list[str]:
+        """Keep only the named tools (plus registered builtins when None).
+
+        Returns the names that were removed.
+        """
+        if names is None:
+            return []
+        keep = set(names)
+        removed: list[str] = []
+        with self._lock:
+            for name in list(self._tools):
+                if name not in keep:
+                    self._tools.pop(name, None)
+                    removed.append(name)
+        return removed
+
     def get(self, name: str) -> Tool | None:
         with self._lock:
             return self._tools.get(name)
