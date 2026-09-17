@@ -43,10 +43,13 @@ target-version = "py312"
 select = ["E", "F", "I", "UP", "B", "TID251"]
 
 [tool.ruff.lint.flake8-tidy-imports.banned-api]
-"canary.api" = { msg = "core/ must never import api/ (spec 3.5)", allowed-modules = ["canary.api", "canary.cli", "canary.__main__"] }
+"canary.api" = { msg = "core/ must never import api/ (spec 3.5)" }
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["TID251"]
+"canary/cli.py" = ["TID251"]
+"canary/__main__.py" = ["TID251"]
+"canary/api/**" = ["TID251"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["canary"]
