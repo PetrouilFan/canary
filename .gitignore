@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.ruff_cache/
+.env
+e2e-root/
+dist/
+build/
+*.egg-info/
+shared/
+releases/
+current
+codebase.lock
