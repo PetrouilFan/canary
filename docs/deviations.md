@@ -15,16 +15,20 @@ future maintainer does not "fix" a deviation back into a bug.
   descriptive (`jobs/`, `sessions/`, `patches/`); a visible name is easier to
   reason about during incident response. Function and semantics are unchanged.
 
-### 2. Green tag ordering by creation time
+### 2. Release stamp uniqueness + green tag ordering by creation time
 
 - **Spec**: zero-padded UTC stamps are enough to order `green/*` tags.
-- **Implementation**: `Health.green_tags()` uses
-  `git for-each-ref --sort=creatordate`, and `_do_revert` picks the newest green
-  *strictly older than* the current release.
-- **Why**: two publishes can land within the same UTC second, so the stamp is not
-  unique; lexicographic ordering then falls back to the sha and can point a
-  revert at the wrong release. Creation order is the truth. The "strictly older"
-  rule also prevents a revert from ping-ponging between two releases.
+- **Implementation**: `Health._unique_stamp()` waits for a UTC second with no
+  existing `green/{stamp}-*` tag before starting a publish, so release ids stay
+  chronologically sortable as plain strings. `Health.green_tags()` additionally
+  orders by `git for-each-ref --sort=creatordate`, and `_do_revert` picks the
+  newest green *strictly older than* the current release.
+- **Why**: two publishes can otherwise land within the same UTC second, so the
+  stamp would not be unique and lexicographic ordering would fall back to the
+  sha, pointing a revert at the wrong release. Tag creation times also have
+  second resolution, so stamps — not tag timestamps — are the ordering truth;
+  creation order is kept as a defense for legacy tags. The "strictly older" rule
+  also prevents a revert from ping-ponging between two releases.
 
 ### 3. `canary init` writes model env vars only for non-mock providers
 

@@ -37,10 +37,12 @@ CANARY_ROOT/
 ```
 
 - Release ids are `{UTC stamp}-{sha7}`, e.g. `20260917T212942Z-e0eb64d`.
+  `Health._unique_stamp()` waits for a stamp that no `green/*` tag has used, so
+  ids sort chronologically as plain strings.
 - Each successful publish creates an annotated tag `green/{release_id}` in the
-  staging repo. The tag ordering is **creation time**
-  (`git for-each-ref --sort=creatordate`), because two releases can share the
-  same one-second stamp.
+  staging repo. Tag ordering is **creation time**
+  (`git for-each-ref --sort=creatordate`) for legacy tags, but the unique stamp
+  is the authoritative order.
 - `current` is swapped atomically: a temporary symlink is created next to it and
   `os.replace()`d over the old one (`rename(2)`). `ln -sfn` is never used because
   it unlinks first and leaves a window where the path does not exist.

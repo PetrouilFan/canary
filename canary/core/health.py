@@ -317,18 +317,35 @@ class Health:
         )
 
     def last_green_sha(self) -> str | None:
-        result = self._git("tag", "-l", "green/*")
-        tags = sorted(result.stdout.split())
+        tags = self.green_tags()
         if not tags:
             return None
         sha = self._git("rev-list", "-n", "1", tags[-1])
         return sha.stdout.strip() or None
 
+    def _unique_stamp(self) -> str:
+        """A UTC stamp no green tag has used yet.
+
+        Release ids must sort chronologically as plain strings, so two
+        publishes within one second cannot share a stamp. Tag creation
+        times only have second resolution, so stamp uniqueness is the
+        ordering guarantee; publishing is serialized by codebase.lock, so
+        waiting for the next second is safe.
+        """
+        for _ in range(600):
+            stamp = utc_stamp()
+            existing = self._git("tag", "-l", f"green/{stamp}-*").stdout.strip()
+            if not existing:
+                return stamp
+            time.sleep(0.05)
+        raise RuntimeError("clock did not advance; cannot allocate a unique release stamp")
+
     def green_tags(self) -> list[str]:
         """Green tags oldest -> newest.
 
-        Ordered by tag creation time: zero-padded stamps alone cannot
-        disambiguate two releases published in the same UTC second.
+        Stamps are unique per publish (_unique_stamp), so refname order is
+        already chronological; creation time is kept as a defense for legacy
+        tags written when two releases could share a stamp.
         """
         result = self._git(
             "for-each-ref",
@@ -470,7 +487,7 @@ class Health:
     def _do_publish(self, lock: FileLock, patch: str, motivation: str | None,
                     session_id: str | None, started: float) -> dict[str, Any]:
         patch_dir = ensure_dir(self.config.data_path / "patches" / "proposed")
-        stamp = utc_stamp()
+        stamp = self._unique_stamp()
         patch_path = patch_dir / f"{stamp}.diff"
         atomic_write_text(patch_path, patch)
         paths = self._patch_paths(patch)
