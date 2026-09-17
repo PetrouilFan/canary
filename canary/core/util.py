@@ -13,6 +13,7 @@ import os
 import re
 import signal
 import socket
+import subprocess
 import time
 import uuid
 from collections.abc import Iterator
@@ -39,6 +40,19 @@ def utc_day() -> str:
 def utc_stamp() -> str:
     """Zero-padded UTC timestamp used in release ids and green tags."""
     return datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+
+
+def parse_stamp(stamp: str) -> float:
+    """Parse utc_now()/utc_stamp() output into a unix timestamp."""
+    text = (stamp or "").strip()
+    if not text:
+        raise ValueError("empty timestamp")
+    for fmt in ("%Y-%m-%dT%H:%M:%SZ", "%Y%m%dT%H%M%SZ"):
+        try:
+            return datetime.strptime(text, fmt).replace(tzinfo=UTC).timestamp()
+        except ValueError:
+            continue
+    raise ValueError(f"unrecognized timestamp: {stamp!r}")
 
 
 def mono() -> float:
@@ -553,3 +567,74 @@ def truncate(text: str, limit: int, marker: str = "\n[... truncated ...]") -> st
     if limit <= 0 or len(text) <= limit:
         return text
     return text[: max(0, limit - len(marker))] + marker
+
+
+# ---------------------------------------------------------------------------
+# git helpers
+# ---------------------------------------------------------------------------
+
+def _git(repo: Path, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["git", "-C", str(repo), *args],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def git_commit(
+    repo: str | os.PathLike[str],
+    message: str,
+    paths: list[str],
+    *,
+    log: Any = None,
+    lock_path: str | os.PathLike[str] | None = None,
+    lock_timeout: float = 30.0,
+) -> bool:
+    """Stage+commit exactly ``paths`` inside ``repo``.
+
+    Staging interleave is the classic race with shared checkouts: a bare
+    ``git commit`` sweeps up files another process staged. We always pass an
+    explicit pathspec to both ``add`` and ``commit``, and optionally serialize
+    with an flock when the caller supplies one. ``git index.lock`` is handled
+    by a short bounded retry rather than blind waiting.
+    """
+    repo_path = Path(repo)
+    if not (repo_path / ".git").exists():
+        return False
+    lock: FileLock | None = None
+    if lock_path is not None:
+        lock = FileLock(lock_path, op="git", timeout=lock_timeout, wait=True)
+        if not lock.acquire():
+            if log:
+                log.warn("git_commit_lock_timeout", repo=str(repo_path))
+            return False
+    try:
+        spec = list(paths) or ["."]
+        last = ""
+        for attempt in range(3):
+            added = _git(repo_path, "add", "-A", "--", *spec)
+            if added.returncode != 0:
+                last = added.stderr.strip()
+                if "index.lock" in last and attempt < 2:
+                    time.sleep(0.2 * (attempt + 1))
+                    continue
+                if log:
+                    log.warn("git_add_failed", repo=str(repo_path), error=last)
+                return False
+            committed = _git(repo_path, "commit", "-q", "-m", message, "--", *spec)
+            if committed.returncode != 0:
+                last = (committed.stderr or committed.stdout).strip()
+                if "nothing to commit" in last:
+                    return False
+                if "index.lock" in last and attempt < 2:
+                    time.sleep(0.2 * (attempt + 1))
+                    continue
+                if log:
+                    log.warn("git_commit_failed", repo=str(repo_path), error=last)
+                return False
+            return True
+        return False
+    finally:
+        if lock is not None:
+            lock.release()
