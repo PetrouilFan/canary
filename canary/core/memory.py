@@ -163,6 +163,20 @@ class SearchHit:
 # index (embedding vectors per model)
 # ---------------------------------------------------------------------------
 
+def _embed_each(backend: EmbeddingBackend, texts: list[str]) -> list[list[float]]:
+    """Embed texts so vectors do not depend on batch composition.
+
+    The quantized Qwen3 ONNX export is not batch-invariant: padding a text
+    alongside a longer sibling shifts its vector by ~2-4% cosine. Memory
+    entries and recall queries must live in the same geometry, so the ONNX
+    backend runs one text per forward pass. Other backends (hash, OpenAI,
+    fastembed) are batch-safe and stay batched.
+    """
+    if getattr(backend, "name", "") == "onnx":
+        return [backend.embed([text])[0] for text in texts]
+    return backend.embed(texts)
+
+
 class EmbeddingIndex:
     """Persisted vectors for one embedding model, swapped in atomically."""
 
@@ -229,7 +243,9 @@ class EmbeddingIndex:
         if not todo:
             return 0
         try:
-            vectors = self.backend.embed([f"{e.id} {' '.join(e.tags)}\n{e.text}" for e in todo])
+            vectors = _embed_each(
+                self.backend, [f"{e.id} {' '.join(e.tags)}\n{e.text}" for e in todo]
+            )
         except EmbeddingUnavailable as exc:
             if self.log:
                 self.log.warn("memory_embed_failed", error=str(exc))
@@ -655,7 +671,7 @@ class Memory:
         if not candidates:
             return None
         try:
-            vecs = self.backend.embed([e.text for e in candidates])
+            vecs = _embed_each(self.backend, [e.text for e in candidates])
         except EmbeddingUnavailable:
             return None
         for entry, other in zip(candidates, vecs, strict=False):
@@ -738,7 +754,7 @@ class Memory:
         pairs: list[tuple[str, str]] = []
         if self.backend.available:
             try:
-                vectors = self.backend.embed([e.text for e in entries])
+                vectors = _embed_each(self.backend, [e.text for e in entries])
                 for i, (a, va) in enumerate(zip(entries, vectors, strict=False)):
                     for b, vb in zip(entries[i + 1 :], vectors[i + 1 :], strict=False):
                         if cosine(va, vb) >= threshold:

@@ -101,7 +101,8 @@ class OnnxBackend(EmbeddingBackend):
         import onnxruntime as ort
 
         self.session = ort.InferenceSession(str(self.onnx_path), providers=["CPUExecutionProvider"])
-        self._inputs = {i.name for i in self.session.get_inputs()}
+        self._input_specs = [(i.name, i.type, i.shape) for i in self.session.get_inputs()]
+        self._inputs = {name for name, _type, _shape in self._input_specs}
         shape = self.session.get_outputs()[0].shape
         inferred = shape[-1] if isinstance(shape[-1], int) else None
         self.dim = int(dim or inferred or 1024)
@@ -109,6 +110,19 @@ class OnnxBackend(EmbeddingBackend):
     @property
     def available(self) -> bool:
         return True
+
+    def _empty_kv_inputs(self, batch: int) -> dict[str, Any]:
+        """Zero-length past_key_values for exports that require them."""
+        import numpy as np
+
+        feed: dict[str, Any] = {}
+        for name, type_name, shape in self._input_specs:
+            if not name.startswith("past_key_values"):
+                continue
+            dtype = np.float32 if "float" in type_name else np.int64
+            dims = [batch if d == "batch_size" else (d if isinstance(d, int) else 0) for d in shape]
+            feed[name] = np.zeros(tuple(dims), dtype=dtype)
+        return feed
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         if not texts:
@@ -121,6 +135,11 @@ class OnnxBackend(EmbeddingBackend):
         feed: dict[str, Any] = {"input_ids": input_ids, "attention_mask": attention}
         if "token_type_ids" in self._inputs:
             feed["token_type_ids"] = np.zeros_like(input_ids)
+        if "position_ids" in self._inputs:
+            feed["position_ids"] = np.tile(
+                np.arange(input_ids.shape[1], dtype=np.int64), (input_ids.shape[0], 1)
+            )
+        feed.update(self._empty_kv_inputs(input_ids.shape[0]))
         outputs = self.session.run(None, feed)
         hidden = outputs[0]
         last = attention.sum(axis=1) - 1
