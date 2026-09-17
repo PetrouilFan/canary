@@ -428,6 +428,7 @@ class Config:
     def role_names(self) -> list[str]:
         return sorted(self.models.get("models", {}).keys())
 
+    @property
     def governance_path(self) -> Path:
         return self.state_path / "governance.yaml"
 
