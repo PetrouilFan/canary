@@ -172,6 +172,7 @@ class APIServer:
             if self.listener_fd is not None:
                 sock = socket_from_fd(self.listener_fd)
                 loop.add_signal_handler(signal.SIGUSR1, self._promote, sock)
+            self._sync_health()
             server = self._server(self.canary_port)
             self._tasks.append(asyncio.create_task(server.serve()))
             self.log.event("canary_child_ready", port=self.canary_port,

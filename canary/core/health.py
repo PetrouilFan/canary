@@ -19,6 +19,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -343,6 +344,15 @@ class Health:
     def staging_clean(self) -> bool:
         result = self._git("status", "--porcelain")
         return result.stdout.strip() == ""
+
+    def _release_sha(self, release: Path) -> str | None:
+        """Commit sha behind a release dir: green tag lookup, then name suffix."""
+        name = release.name
+        resolved = self._git("rev-list", "-n", "1", f"green/{name}").stdout.strip()
+        if resolved:
+            return resolved
+        suffix = name.rsplit("-", 1)[-1]
+        return suffix if len(suffix) == 7 else None
 
     # -- preflight tiers ---------------------------------------------------
 
@@ -692,6 +702,8 @@ class Health:
         env["PYTHONPATH"] = str(release) + os.pathsep + env.get("PYTHONPATH", "")
         env["HARNESS_RELEASE_ID"] = release.name if release_dir else \
             self.config.release_id
+        env["HARNESS_COMMIT_SHA"] = self._release_sha(release) or \
+            self.config.commit_sha
         env["HARNESS_STATE_PATH"] = str(self.config.state_path)
         env["HARNESS_CANARY_PORT"] = str(port)
         if self.config.root is not None:
@@ -769,10 +781,21 @@ class Health:
         drain_timeout = float(self.config.get("releases.drain_timeout_s", 60) or 60)
         self.set_draining(True)
         if self.drain_callback is not None:
-            try:
-                self.drain_callback(drain_timeout)
-            except Exception as exc:  # noqa: BLE001
-                self.log.warn("drain_callback_failed", error=str(exc))
+            drain = self.drain_callback
+
+            # The caller that triggered this publish/revert is often an
+            # in-flight API request or tool call inside this very process.
+            # Draining synchronously deadlocks: the drain waits for in-flight
+            # work while the in-flight work waits for the publish to return.
+            # Let the caller answer first, then drain.
+            def _drain() -> None:
+                time.sleep(2.0)
+                try:
+                    drain(drain_timeout)
+                except Exception as exc:  # noqa: BLE001
+                    self.log.warn("drain_callback_failed", error=str(exc))
+
+            threading.Thread(target=_drain, name="canary-drain", daemon=True).start()
         self.log.health_probe("canary_probe", "ok", 0,
                               f"promoted={promoted} port={port}")
         return {"ok": True, "release_id": release_dir.name if release_dir else label,
