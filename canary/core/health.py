@@ -178,6 +178,7 @@ class Health:
         self.listener_fd = listener_fd
         self.port = port
         self.drain_callback = drain_callback
+        self.base_gate_override: tuple[bool, str] | None = None
         rng = config.get("canary.port_range") or [9000, 9100]
         self.ports = Ports(config.data_path, log, low=rng[0], high=rng[1])
         self.evals: Evals | None = None
@@ -259,6 +260,8 @@ class Health:
     # -- base gate ---------------------------------------------------------
 
     def base_gate(self) -> tuple[bool, str]:
+        if self.base_gate_override is not None:
+            return self.base_gate_override
         if self.config.root is None:
             return False, "no CANARY_ROOT: publishing requires a root"
         ok, reason = self.check_ready()

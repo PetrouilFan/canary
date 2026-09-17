@@ -656,6 +656,7 @@ class ToolRegistry:
         self._reload_errors: dict[str, str] = {}
         self._module_tools: dict[str, list[str]] = {}
         self._namespaces: dict[str, types.ModuleType] = {}
+        self._disabled: set[str] = set()
         self._watcher: threading.Thread | None = None
         self._stop = threading.Event()
         self._observer: Any = None
@@ -733,12 +734,33 @@ class ToolRegistry:
                 missing = tool.missing_requires()
                 if missing:
                     out[name] = missing
+                elif name in self._disabled:
+                    out[name] = ["disabled by operator"]
         return out
+
+    def enable(self, name: str) -> bool:
+        """Operator enable/disable (``POST /agent/tools/{name}/enable``)."""
+        with self._lock:
+            if name not in self._tools:
+                return False
+            self._disabled.discard(name)
+        return True
+
+    def disable(self, name: str) -> bool:
+        with self._lock:
+            if name not in self._tools:
+                return False
+            self._disabled.add(name)
+        return True
+
+    def is_enabled(self, name: str) -> bool:
+        with self._lock:
+            return name in self._tools and name not in self._disabled
 
     def available(self) -> dict[str, Tool]:
         enabled: dict[str, Tool] = {}
         for name, tool in self.all().items():
-            if not tool.missing_requires():
+            if not tool.missing_requires() and name not in self._disabled:
                 enabled[name] = tool
         return enabled
 
@@ -763,6 +785,8 @@ class ToolRegistry:
         tool = self.get(name)
         if tool is None:
             return f"error: unknown tool {name!r}"
+        if not self.is_enabled(name):
+            return f"error: tool {name!r} is disabled"
         missing = tool.missing_requires()
         if missing:
             return f"error: tool {name!r} disabled; missing env: {', '.join(missing)}"

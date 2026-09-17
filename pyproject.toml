@@ -49,7 +49,7 @@ select = ["E", "F", "I", "UP", "B", "TID251"]
 "tests/**" = ["TID251"]
 "canary/cli.py" = ["TID251"]
 "canary/__main__.py" = ["TID251"]
-"canary/api/**" = ["TID251"]
+"canary/api/**" = ["TID251", "B008"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["canary"]

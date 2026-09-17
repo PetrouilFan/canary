@@ -356,7 +356,7 @@ class Config:
                         continue
                 else:
                     entry[field] = raw
-            entry.setdefault("provider", "openai")
+            entry["provider"] = "openai"
             entry.setdefault("api_key_env", DEFAULT_MODEL_KEY_ENV)
 
     def _load_models(self) -> dict:

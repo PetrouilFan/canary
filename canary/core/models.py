@@ -264,6 +264,14 @@ class MockModel:
     ) -> ModelResponse:
         self.calls.append(messages)
         resp = self._next()
+        if not resp.usage:
+            prompt = max(1, len(json.dumps(messages)) // 4)
+            completion = max(1, (len(resp.content) + 20 * len(resp.tool_calls)) // 4)
+            resp.usage = {
+                "prompt_tokens": prompt,
+                "completion_tokens": completion,
+                "total_tokens": prompt + completion,
+            }
         if resp.tool_calls and tools is not None:
             allowed = {t.get("function", {}).get("name") for t in tools}
             resp.tool_calls = [tc for tc in resp.tool_calls if tc.name in allowed]

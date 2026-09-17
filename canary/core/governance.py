@@ -105,6 +105,11 @@ class Governance:
             out.append("shared/" + p.relative_to(self.config.state_path).as_posix())
         except ValueError:
             pass
+        staging = self.config.state_path / "staging"
+        try:
+            out.append(p.relative_to(staging).as_posix())
+        except ValueError:
+            pass
         base = self.config.base_dir.resolve()
         try:
             out.append(p.relative_to(base).as_posix())
