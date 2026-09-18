@@ -66,6 +66,7 @@ class Job:
     note: str | None = None
     meta: dict[str, Any] = field(default_factory=dict)
     progress: dict[str, Any] | None = None
+    kill_result: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -226,6 +227,10 @@ class Jobs:
                 job.status = "failed"
             job.exit_code = rc
             job.ended = utc_now()
+            if job.kill_result is not None:
+                job.kill_result["exited_at"] = job.ended
+                job.kill_result["exit_code"] = rc
+                job.kill_result["status"] = job.status
             self._procs.pop(job.id, None)
             if job.persistent:
                 self._persist(job)
@@ -408,6 +413,7 @@ class Jobs:
                 "persistent": job.persistent,
                 "command": truncate(job.command, 200),
                 "progress": job.progress,
+                "kill_result": job.kill_result,
             })
         return {"jobs": out, "count": len(out)}
 
@@ -430,7 +436,9 @@ class Jobs:
             return {"error": f"unknown job: {job_id}"}
         if job.status not in ("pending", "running"):
             return {"error": f"job {job_id} is {job.status}; not running"}
-        if percent is not None and not isinstance(percent, (int, float)):
+        if percent is not None and (
+            isinstance(percent, bool) or not isinstance(percent, (int, float))
+        ):
             return {"error": "percent must be a number in [0, 100]"}
         prev = job.progress or {}
         pct = prev.get("percent")
@@ -456,9 +464,17 @@ class Jobs:
         if job.status not in ("pending", "running"):
             return {"error": f"job {job_id} is {job.status}; nothing to kill"}
         job.note = "killed"
+        job.kill_result = {
+            "signal": None,
+            "requested_at": utc_now(),
+            "exited_at": None,
+            "exit_code": None,
+            "status": "requested",
+        }
+        sent: list[str] = []
         proc = self._procs.get(job.id)
         if proc is not None:
-            kill_process_group(job.pgid or job.pid or 0)
+            kill_process_group(job.pgid or job.pid or 0, sent=sent)
             try:
                 rc = proc.wait(timeout=10)
             except subprocess.TimeoutExpired:
@@ -467,10 +483,21 @@ class Jobs:
         else:
             alive = pid_alive(job.pid or 0, job.pid_start_time)
             if alive:
-                kill_process_group(job.pgid or job.pid or 0)
+                kill_process_group(job.pgid or job.pid or 0, sent=sent)
             self._finalize(job, -15)
-        self.logger.event("job_killed", job_id=job.id, status=job.status)
-        return {"job_id": job.id, "status": job.status, "exit_code": job.exit_code}
+        job.kill_result["signal"] = sent[-1] if sent else None
+        self.logger.event(
+            "job_killed",
+            job_id=job.id,
+            status=job.status,
+            signal=job.kill_result["signal"],
+        )
+        return {
+            "job_id": job.id,
+            "status": job.status,
+            "exit_code": job.exit_code,
+            "kill_result": job.kill_result,
+        }
 
     def info(self) -> dict[str, Any]:
         return {

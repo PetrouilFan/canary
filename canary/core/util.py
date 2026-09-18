@@ -452,8 +452,15 @@ def port_available(port: int, host: str = "127.0.0.1") -> bool:
             return False
 
 
-def kill_process_group(pgid: int, grace: float = 5.0) -> bool:
-    """SIGTERM then SIGKILL to an entire process group (spec 4.9)."""
+def kill_process_group(
+    pgid: int, grace: float = 5.0, sent: list[str] | None = None
+) -> bool:
+    """SIGTERM then SIGKILL to an entire process group (spec 4.9).
+
+    ``sent``, when given, collects the names of the signals actually delivered
+    (``"SIGTERM"`` immediately; ``"SIGKILL"`` only if the group outlives
+    ``grace``). Nothing is appended when the group was already gone.
+    """
     if pgid <= 1:
         return False
 
@@ -472,6 +479,8 @@ def kill_process_group(pgid: int, grace: float = 5.0) -> bool:
         os.killpg(pgid, signal.SIGTERM)
     except ProcessLookupError:
         return True
+    if sent is not None:
+        sent.append("SIGTERM")
     deadline = mono() + grace
     while mono() < deadline:
         if not alive():
@@ -481,6 +490,9 @@ def kill_process_group(pgid: int, grace: float = 5.0) -> bool:
         os.killpg(pgid, signal.SIGKILL)
     except ProcessLookupError:
         pass
+    else:
+        if sent is not None:
+            sent.append("SIGKILL")
     time.sleep(0.2)
     return not alive()
 

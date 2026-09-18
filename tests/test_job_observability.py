@@ -52,6 +52,17 @@ def test_report_progress_clamps_and_truncates(root: Path) -> None:
         jobs.kill(jid)
 
 
+def test_report_progress_rejects_bool_percent(root: Path) -> None:
+    """bool is an int subclass; True is not a percentage."""
+    jobs = _jobs(build_config(root))
+    jid = jobs.spawn("sleep 30")["job_id"]
+    try:
+        assert "error" in jobs.report_progress(jid, percent=True)
+        assert jobs.report_progress(jid, percent=1)["progress"]["percent"] == 1
+    finally:
+        jobs.kill(jid)
+
+
 def test_list_surfaces_progress(root: Path) -> None:
     jobs = _jobs(build_config(root))
     jid = jobs.spawn("sleep 30")["job_id"]
