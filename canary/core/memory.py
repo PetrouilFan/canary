@@ -50,6 +50,65 @@ RELATION_KINDS = ("supersedes", "contradicts", "supports")
 INDEX_CAP_BYTES = 5120
 RECENT_WINDOW_S = 30 * 86400.0
 
+PROVENANCE_FIELDS = (
+    "origin", "author", "derivation", "confidence", "lineage", "status", "scope",
+)
+AUTHORS = ("user", "agent", "process", "external")
+DERIVATIONS = ("stated", "inferred", "summarized", "observed")
+STATUSES = ("confirmed", "uncertain", "superseded")
+REDACTED = "[redacted]"
+PROVENANCE_MAX_LEN = 200
+
+
+def _clip(value, limit: int = PROVENANCE_MAX_LEN) -> str:
+    """Bound and redact a single provenance scalar."""
+    text = str(value or "").strip()
+    if _looks_secret(text):
+        return REDACTED
+    return text[:limit]
+
+
+def normalize_provenance(raw, *, default_origin: str = "") -> dict:
+    """Coerce arbitrary input into the v1 provenance schema. Never raises."""
+    src = raw if isinstance(raw, dict) else {}
+    origin = _clip(src.get("origin") or default_origin) or "unknown"
+    author = str(src.get("author") or "").strip().lower()
+    if author not in AUTHORS:
+        author = "process" if origin == "unknown" else "agent"
+    derivation = str(src.get("derivation") or "").strip().lower()
+    if derivation not in DERIVATIONS:
+        derivation = "stated" if src else "observed"
+    try:
+        confidence = min(1.0, max(0.0, float(src.get("confidence", 0.5))))
+    except (TypeError, ValueError):
+        confidence = 0.5
+    lineage = [c for v in (src.get("lineage") or []) if (c := _clip(v))]
+    status = str(src.get("status") or "").strip().lower()
+    if status not in STATUSES:
+        status = "uncertain" if origin == "unknown" or derivation == "inferred" else "confirmed"
+    return {
+        "origin": origin,
+        "author": author,
+        "derivation": derivation,
+        "confidence": round(confidence, 2),
+        "lineage": lineage,
+        "status": status,
+        "scope": _clip(src.get("scope")) or "session",
+    }
+
+
+def merge_provenance(older, newer) -> dict:
+    """Newer assertions win; lineage accumulates so history is never deleted."""
+    base = normalize_provenance(older) if isinstance(older, dict) else {}
+    if not isinstance(newer, dict):
+        return base
+    merged = dict(base)
+    merged.update({k: v for k, v in newer.items() if v not in (None, "")})
+    merged["lineage"] = list(dict.fromkeys(
+        list(base.get("lineage") or []) + list(newer.get("lineage") or [])
+    ))
+    return normalize_provenance(merged, default_origin=str(base.get("origin") or ""))
+
 
 # ---------------------------------------------------------------------------
 # entry model
@@ -72,6 +131,15 @@ class Entry:
     def text(self) -> str:
         return self.body.strip()
 
+    @property
+    def provenance(self) -> dict:
+        raw = self.extra.get("provenance")
+        return normalize_provenance(raw) if isinstance(raw, dict) else {}
+
+    @property
+    def status(self) -> str:
+        return str(self.provenance.get("status") or "uncertain")
+
     def to_markdown(self) -> str:
         fm: dict[str, Any] = {
             "id": self.id,
@@ -92,6 +160,8 @@ class Entry:
             fm["archived"] = True
         for key, value in self.extra.items():
             fm.setdefault(key, value)
+        if isinstance(fm.get("provenance"), dict):
+            fm["provenance"] = normalize_provenance(fm["provenance"])
         head = yaml.safe_dump(fm, sort_keys=False, allow_unicode=True).strip()
         return f"{FRONTMATTER_BOUNDARY}\n{head}\n{FRONTMATTER_BOUNDARY}\n\n{self.body.strip()}\n"
 
@@ -156,6 +226,8 @@ class SearchHit:
         }
         if self.entry.relations:
             data["relations"] = self.entry.relations
+        if self.entry.provenance:
+            data["provenance"] = self.entry.provenance
         return data
 
 
@@ -391,6 +463,7 @@ class Memory:
         source: str = "",
         importance: float | None = 0.5,
         relations: dict[str, list[str]] | None = None,
+        provenance: dict | None = None,
     ) -> Entry:
         body = (body or "").strip()
         if not body:
@@ -413,6 +486,10 @@ class Memory:
                         existing.relations[kind] = sorted(merged)
             if source:
                 existing.source = source
+            if provenance:
+                existing.extra["provenance"] = merge_provenance(
+                    existing.extra.get("provenance"), provenance
+                )
             entry = existing
         else:
             entry = Entry(
@@ -428,6 +505,11 @@ class Memory:
                     for kind, ids in (relations or {}).items()
                     if kind in RELATION_KINDS and ids
                 },
+                extra=(
+                    {"provenance": normalize_provenance(provenance, default_origin=source)}
+                    if provenance
+                    else {}
+                ),
             )
         util.atomic_write_text(self.entry_path(entry.id), entry.to_markdown())
         self._cache[entry.id] = entry
@@ -546,6 +628,10 @@ class Memory:
                     components={"embedding": embed, "tags": tag_score, "recency": recency},
                 )
             )
+        for hit in hits:
+            hit.components["status"] = hit.entry.status
+            if hit.entry.status == "superseded":
+                hit.score *= 0.5
         hits.sort(key=lambda h: h.score, reverse=True)
         top = hits[:k]
         if self.config.get("memory.relations", True):
@@ -587,7 +673,11 @@ class Memory:
         "You extract durable memories from an agent conversation.\n"
         "Return at most {max_n} entries as a JSON array. Each item:\n"
         '  {{"body": "one self-contained fact or preference", '
-        '"tags": ["..."], "importance": 0.0-1.0}}\n'
+        '"tags": ["..."], "importance": 0.0-1.0, '
+        '"derivation": "stated|inferred|summarized", "confidence": 0.0-1.0, '
+        '"status": "confirmed|uncertain"}}\n'
+        "derivation=stated means a participant stated it, inferred means you deduced it, "
+        "summarized means you condensed several turns; use confidence < 0.5 when unsure.\n"
         "Only include facts that will matter in future sessions (preferences, decisions, "
         "project facts, corrections). Never include secrets, credentials, or transient chatter. "
         "Return [] when nothing is worth remembering.\n\n"
@@ -600,6 +690,7 @@ class Memory:
         *,
         max_entries: int | None = None,
         source: str = "",
+        origin: str = "",
         model_client: ModelClient | None = None,
     ) -> list[Entry]:
         if not self.config.get("memory.extract", True):
@@ -618,10 +709,12 @@ class Memory:
                 self.log.warn("memory_extract_failed", error=str(exc))
             return []
         return self._ingest_extracted(
-            response.content or "", max_entries=max_entries, source=source
+            response.content or "", max_entries=max_entries, source=source, origin=origin
         )
 
-    def _ingest_extracted(self, text: str, *, max_entries: int, source: str) -> list[Entry]:
+    def _ingest_extracted(
+        self, text: str, *, max_entries: int, source: str, origin: str = ""
+    ) -> list[Entry]:
         payload = _extract_json_array(text)
         if not payload:
             return []
@@ -647,6 +740,15 @@ class Memory:
                     tags=[str(t) for t in item.get("tags") or []],
                     source=source or "extraction",
                     importance=float(item.get("importance", 0.5)),
+                    provenance={
+                        "origin": origin or source or "extraction",
+                        "author": "agent",
+                        "derivation": str(item.get("derivation") or "summarized"),
+                        "confidence": item.get("confidence", 0.5),
+                        "lineage": [origin] if origin else [],
+                        "status": str(item.get("status") or "uncertain"),
+                        "scope": "session",
+                    },
                 )
             except (ValueError, TypeError):
                 continue
@@ -729,6 +831,18 @@ class Memory:
                 keep.relations.setdefault("supersedes", [])
                 if drop.id not in keep.relations["supersedes"]:
                     keep.relations["supersedes"].append(drop.id)
+                keep.extra["provenance"] = merge_provenance(
+                    keep.extra.get("provenance"),
+                    {
+                        "derivation": "summarized",
+                        "lineage": [drop.id] + list(drop.provenance.get("lineage") or []),
+                        "status": "confirmed",
+                    },
+                )
+                drop.extra["provenance"] = merge_provenance(
+                    drop.extra.get("provenance"),
+                    {"status": "superseded", "lineage": [keep.id]},
+                )
                 drop.archived = True
                 drop.updated = keep.updated
                 util.atomic_write_text(self.entry_path(keep.id), keep.to_markdown())
@@ -867,7 +981,19 @@ def format_hits(hits: list[SearchHit]) -> str:
         return "No memories found."
     lines: list[str] = []
     for hit in hits:
-        prefix = "[conflict] " if hit.components.get("conflict") else ""
+        marks = []
+        if hit.components.get("conflict"):
+            marks.append("[conflict]")
+        status = hit.components.get("status") or hit.entry.status
+        if status == "superseded":
+            marks.append("[superseded]")
+        elif (
+            status == "uncertain"
+            and hit.entry.provenance
+            and not hit.components.get("conflict")
+        ):
+            marks.append("[uncertain]")
+        prefix = "".join(f"{m} " for m in marks)
         tags = f" [{', '.join(hit.entry.tags)}]" if hit.entry.tags else ""
         lines.append(f"- {prefix}{hit.entry.id}{tags}: {hit.entry.text}")
     return "\n".join(lines)
