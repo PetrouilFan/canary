@@ -46,6 +46,10 @@ class Tool:
     parameters: dict[str, Any] = {}
     requires: list[str] = []
     profiles: list[str] = []
+    # Observational impact class: surfaced via ToolRegistry.impact() and
+    # GET /agent/tools. Never part of spec() - specs() feeds the provider
+    # prompt and must stay byte-identical.
+    impact: str = "free"
 
     def __init__(self, harness: Any) -> None:
         self.harness = harness
@@ -215,6 +219,7 @@ class EditTool(Tool):
 
 
 class BashTool(Tool):
+    impact = "unbounded"
     name = "bash"
     description = (
         "Run a shell command (ungoverned by design). Long-running work should "
@@ -262,6 +267,7 @@ class BashTool(Tool):
 
 
 class ProposeTool(Tool):
+    impact = "high"
     name = "propose"
     description = "Propose a code patch. Runs preflight, canary and publish (spec 4.6)."
     parameters = {
@@ -279,6 +285,7 @@ class ProposeTool(Tool):
 
 
 class RevertTool(Tool):
+    impact = "high"
     name = "revert"
     description = "Revert the running copy to a previous green release."
     parameters = {
@@ -371,6 +378,7 @@ class MemorySaveTool(Tool):
 
 
 class MemoryForgetTool(Tool):
+    impact = "high"
     name = "memory_forget"
     description = "Archive a memory entry (entries are never hard-deleted)."
     parameters = {
@@ -443,6 +451,7 @@ class SessionReadTool(Tool):
 
 
 class SessionSendTool(Tool):
+    impact = "high"
     name = "session_send"
     description = "Send a message to another session's inbox (delivery receipts apply)."
     parameters = {
@@ -495,6 +504,7 @@ class TaskTool(Tool):
 
 
 class EvalsRunTool(Tool):
+    impact = "high"
     name = "evals_run"
     description = "Schedule an eval run as a background job; returns the job id."
     parameters = {"type": "object", "properties": {}}
@@ -505,6 +515,7 @@ class EvalsRunTool(Tool):
 
 
 class DiagnoseRunTool(Tool):
+    impact = "high"
     name = "diagnose_run"
     description = "Schedule a contrastive diagnosis job; returns the job id."
     parameters = {"type": "object", "properties": {}}
@@ -515,6 +526,7 @@ class DiagnoseRunTool(Tool):
 
 
 class JobSpawnTool(Tool):
+    impact = "unbounded"
     name = "job_spawn"
     description = "Spawn a long-running background shell job; returns the job id."
     parameters = {
@@ -582,6 +594,7 @@ class JobTailTool(Tool):
 
 
 class JobKillTool(Tool):
+    impact = "high"
     name = "job_kill"
     description = "Kill a running job (process group)."
     parameters = {
@@ -1073,6 +1086,30 @@ class ToolRegistry:
         """Loaded extension namespaces (used by evals for custom checks)."""
         return dict(self._namespaces)
 
+    def _impact_overrides(self) -> dict[str, str]:
+        """``governance.yaml`` impact map (real file, not harness config)."""
+        governance = getattr(self.harness, "governance", None)
+        impact = getattr(governance, "impact", None) if governance is not None else None
+        if not isinstance(impact, dict):
+            return {}
+        return {str(k): str(v) for k, v in impact.items()}
+
+    def impact(self) -> dict[str, dict[str, str]]:
+        """Per-tool impact class plus where it came from (observational only)."""
+        overrides = self._impact_overrides()
+        out: dict[str, dict[str, str]] = {}
+        for name in self.names():
+            if name in overrides:
+                out[name] = {"impact": overrides[name], "source": "governance"}
+            elif name in self._builtin_names:
+                out[name] = {"impact": str(getattr(self._tools[name], "impact", "free")),
+                             "source": "builtin"}
+            else:
+                # Extensions are writable in-process code: they cannot classify
+                # themselves down, so an unlisted extension tool is "high".
+                out[name] = {"impact": "high", "source": "extension-default"}
+        return out
+
     def info(self) -> dict[str, Any]:
         return {
             "tools": self.names(),
@@ -1080,5 +1117,6 @@ class ToolRegistry:
             "extensions": {name: names for name, names in sorted(self._module_tools.items())},
             "disabled": self.disabled(),
             "profiles": self.profiles(),
+            "impact": self.impact(),
             "reload_errors": dict(self._reload_errors),
         }

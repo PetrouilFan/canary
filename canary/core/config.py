@@ -160,6 +160,7 @@ def default_governance() -> dict:
             "shared/models.yaml",
             "shared/harness.yaml",
         ],
+        "impact": {},
         "deny_write": [
             "shared/staging/**",
             "shared/evals/**",

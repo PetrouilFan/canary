@@ -37,6 +37,7 @@ class Governance:
         self.log = log
         self.allow: list[str] = []
         self.deny: list[str] = []
+        self.impact: dict[str, str] = {}
         self.error: str | None = None
         self.load()
 
@@ -68,19 +69,30 @@ class Governance:
         deny = data.get("deny_write") or []
         self.allow = [str(p) for p in allow if isinstance(p, (str, Path))]
         self.deny = [str(p) for p in deny if isinstance(p, (str, Path))]
+        raw_impact = data.get("impact") or {}
+        self.impact = (
+            {str(k): str(v) for k, v in raw_impact.items()}
+            if isinstance(raw_impact, dict)
+            else {}
+        )
 
-    def save(self, allow: list[str], deny: list[str]) -> None:
+    def save(self, allow: list[str], deny: list[str], impact: dict[str, str] | None = None) -> None:
         if yaml is None:  # pragma: no cover
             raise RuntimeError("PyYAML is required to write governance.yaml")
         from .util import atomic_write_text
 
         text = yaml.safe_dump(
-            {"allow_write": list(allow), "deny_write": list(deny)},
+            {
+                "allow_write": list(allow),
+                "deny_write": list(deny),
+                "impact": dict(impact if impact is not None else self.impact),
+            },
             sort_keys=False,
             default_flow_style=False,
         )
         atomic_write_text(self.path, text)
         self.allow, self.deny = list(allow), list(deny)
+        self.impact = dict(impact if impact is not None else self.impact)
         if self.log is not None:
             self.log.event("governance_saved", allow=len(allow), deny=len(deny))
 
@@ -139,7 +151,11 @@ class Governance:
     # -- validation ------------------------------------------------------
 
     def as_dict(self) -> dict[str, Any]:
-        return {"allow_write": list(self.allow), "deny_write": list(self.deny)}
+        return {
+            "allow_write": list(self.allow),
+            "deny_write": list(self.deny),
+            "impact": dict(self.impact),
+        }
 
     def validate(self) -> list[str]:
         errors: list[str] = []

@@ -526,8 +526,12 @@ class Agent:
                     f"{result}\n[system] tool '{name}' has failed {count} times "
                     "this turn; stop retrying it and try another approach"
                 )
+        impact = self.tools.impact().get(name, {}).get("impact", "free")
+        fields: dict[str, Any] = {"impact": impact}
+        if impact in ("high", "unbounded"):
+            fields["args"] = json.dumps(args, ensure_ascii=False, sort_keys=True)[:200]
         self.log.event(
-            "tool_call", tool=name, session_id=turn.session.id, failed=failed
+            "tool_call", tool=name, session_id=turn.session.id, failed=failed, **fields
         )
         return result
 
