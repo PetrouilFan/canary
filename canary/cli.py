@@ -490,6 +490,37 @@ def cmd_unlock(args: argparse.Namespace) -> int:
     return 0 if ok else 1
 
 
+def cmd_jobs(args: argparse.Namespace) -> int:
+    """``canary jobs progress`` - self-report progress for a live job (spec 4.9).
+
+    Writes the same file a job's own process writes
+    (``{state}/data/jobs/{job_id}.progress.json``, atomically). No HTTP, no
+    server needed: the harness merges the file while the job is live.
+    """
+    root = _root(args)
+    cfg = Config(root=root)
+    record: dict[str, Any] = {
+        "job_id": args.job_id,
+        "updated_at": util.utc_now(),
+        "reporter_pid": os.getpid(),
+    }
+    if args.percent is not None:
+        record["percent"] = max(0.0, min(100.0, float(args.percent)))
+    if args.message:
+        record["message"] = util.truncate(args.message, 200)
+    path = Path(cfg.data_path) / "jobs" / f"{args.job_id}.progress.json"
+    util.atomic_write_json(path, record)
+    if args.json:
+        _print_json({"ok": True, "path": str(path), "progress": record})
+    else:
+        shown = record.get("percent")
+        print(
+            f"progress: {args.job_id} "
+            f"{'-' if shown is None else f'{shown:g}%'} {record.get('message') or ''}".rstrip()
+        )
+    return 0
+
+
 # -- argparse ----------------------------------------------------------------
 
 
@@ -551,6 +582,17 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--port", type=int, default=None)
     p.add_argument("--json", action="store_true")
     p.set_defaults(func=cmd_status)
+
+    p = sub.add_parser("jobs", help="job helpers")
+    p.set_defaults(func=None)
+    jsub = p.add_subparsers(dest="jobs_command")
+    pj = jsub.add_parser("progress", help="self-report progress for a job")
+    pj.add_argument("--job-id", required=True, help="job id ($CANARY_JOB_ID inside a job)")
+    pj.add_argument("--percent", type=float, default=None, help="0-100 (clamped)")
+    pj.add_argument("--message", default=None, help="free-text note (truncated to 200)")
+    pj.add_argument("--root", default=None)
+    pj.add_argument("--json", action="store_true")
+    pj.set_defaults(func=cmd_jobs)
 
     p = sub.add_parser("unlock", help="force-unlock a stale codebase.lock")
     p.add_argument("--nonce", required=True)

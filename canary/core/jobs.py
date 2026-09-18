@@ -147,6 +147,7 @@ class Jobs:
         child_env["HARNESS_STATE_PATH"] = str(self.config.state_path)
         child_env["HARNESS_RELEASE_ID"] = self.config.release_id
         child_env["HARNESS_COMMIT_SHA"] = self.config.commit_sha
+        child_env["CANARY_JOB_ID"] = job_id  # so the job can self-report progress
         if env:
             child_env.update({k: str(v) for k, v in env.items()})
         workdir = cwd or str(self.config.base_dir)
@@ -340,6 +341,9 @@ class Jobs:
             job.id in self._procs or pid_alive(job.pid or 0, job.pid_start_time)
         )
         data.update(self._runtime_facts(job))
+        progress, source = self._progress_view(job)
+        data["progress"] = progress
+        data["progress_source"] = source
         data["log_tail"] = tail_lines(job.log_path, 10)
         return data
 
@@ -398,6 +402,7 @@ class Jobs:
                 continue
             if agent_id and job.agent_id != agent_id:
                 continue
+            progress, progress_source = self._progress_view(job)
             out.append({
                 "job_id": job.id,
                 "name": job.name,
@@ -413,7 +418,8 @@ class Jobs:
                 "persistent": job.persistent,
                 "cwd": job.cwd,
                 "command": truncate(job.command, 2000),
-                "progress": job.progress,
+                "progress": progress,
+                "progress_source": progress_source,
                 "kill_result": job.kill_result,
             })
         return {"jobs": out, "count": len(out)}
@@ -455,6 +461,73 @@ class Jobs:
             "job_progress", job_id=job.id, percent=pct, message=truncate(str(msg or ""), 80)
         )
         return {"job_id": job.id, "status": job.status, "progress": job.progress}
+
+    def progress_path(self, job_id: str) -> Path:
+        """The file a job's own process writes to self-report progress (4.9).
+
+        Transport for subprocesses: no HTTP endpoint, so a job drops
+        ``{jobs_dir}/{job_id}.progress.json`` written atomically with
+        :func:`canary.core.util.atomic_write_json`. Only :class:`Jobs` reads it.
+        """
+        return self.dir / f"{job_id}.progress.json"
+
+    def _file_progress(self, job: Job) -> dict[str, Any] | None:
+        """The job's self-reported progress file, when it can be trusted.
+
+        Start-time gating, as for every other pid check here: the file counts
+        only while the job is live under its recorded pid *and* start time, and
+        only if it was written after this incarnation started
+        (``mtime >= job.started``). A file left behind by an earlier job - or by
+        a job id that came back around - therefore never wins.
+        """
+        if job.status not in ("pending", "running"):
+            return None
+        if not (job.id in self._procs or pid_alive(job.pid or 0, job.pid_start_time)):
+            return None
+        path = self.progress_path(job.id)
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            return None
+        if job.started:
+            try:
+                if mtime < parse_stamp(job.started):
+                    return None
+            except ValueError:
+                return None
+        record = read_json(path, default=None)
+        if not isinstance(record, dict) or str(record.get("job_id") or "") != job.id:
+            return None
+        percent = record.get("percent")
+        if percent is not None and (
+            isinstance(percent, bool) or not isinstance(percent, (int, float))
+        ):
+            return None
+        message = record.get("message")
+        if percent is None and message is None:
+            return None
+        return {
+            "percent": None if percent is None else max(0.0, min(100.0, float(percent))),
+            "message": None if message is None else truncate(str(message), 200),
+            "updated_at": record.get("updated_at"),
+        }
+
+    def _progress_view(self, job: Job) -> tuple[dict[str, Any] | None, str | None]:
+        """Progress plus the channel it came from: ``"file"`` or ``"memory"``.
+
+        The file is the job's own word and wins while it is valid, unless the
+        in-memory record written through :meth:`report_progress` is newer - a
+        fresh API report must not be masked by a stale file.
+        """
+        reported = self._file_progress(job)
+        if reported is None:
+            return (job.progress, "memory") if job.progress else (None, None)
+        if job.progress:
+            mine = str(job.progress.get("updated_at") or "")
+            theirs = str(reported.get("updated_at") or "")
+            if mine and mine > theirs:
+                return job.progress, "memory"
+        return reported, "file"
 
     # -- control -----------------------------------------------------------
 
