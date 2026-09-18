@@ -411,7 +411,8 @@ class Jobs:
                 "ended": job.ended,
                 "exit_code": job.exit_code,
                 "persistent": job.persistent,
-                "command": truncate(job.command, 200),
+                "cwd": job.cwd,
+                "command": truncate(job.command, 2000),
                 "progress": job.progress,
                 "kill_result": job.kill_result,
             })
