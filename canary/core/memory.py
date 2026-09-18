@@ -132,6 +132,11 @@ class Entry:
         return self.body.strip()
 
     @property
+    def safe_text(self) -> str:
+        """Body with credential values redacted - the only text writers emit."""
+        return redact_secrets(self.body.strip())
+
+    @property
     def provenance(self) -> dict:
         raw = self.extra.get("provenance")
         return normalize_provenance(raw) if isinstance(raw, dict) else {}
@@ -163,7 +168,7 @@ class Entry:
         if isinstance(fm.get("provenance"), dict):
             fm["provenance"] = normalize_provenance(fm["provenance"])
         head = yaml.safe_dump(fm, sort_keys=False, allow_unicode=True).strip()
-        return f"{FRONTMATTER_BOUNDARY}\n{head}\n{FRONTMATTER_BOUNDARY}\n\n{self.body.strip()}\n"
+        return f"{FRONTMATTER_BOUNDARY}\n{head}\n{FRONTMATTER_BOUNDARY}\n\n{self.safe_text}\n"
 
     @classmethod
     def from_markdown(cls, entry_id: str, text: str) -> Entry:
@@ -465,7 +470,7 @@ class Memory:
         relations: dict[str, list[str]] | None = None,
         provenance: dict | None = None,
     ) -> Entry:
-        body = (body or "").strip()
+        body = redact_secrets((body or "").strip())
         if not body:
             raise ValueError("memory entry body must not be empty")
         importance = 0.5 if importance is None else importance
@@ -553,14 +558,14 @@ class Memory:
         lines = ["# Memory index", ""]
         for entry in sorted(entries, key=lambda e: (e.importance, e.updated), reverse=True):
             tags = f"  _{', '.join(entry.tags)}_" if entry.tags else ""
-            summary = entry.text.replace("\n", " ")[:120]
+            summary = entry.safe_text.replace("\n", " ")[:120]
             lines.append(f"- [[{entry.id}]] {summary}{tags}")
         text = "\n".join(lines) + "\n"
         if len(text.encode("utf-8")) > INDEX_CAP_BYTES:
             kept = ["# Memory index", "", f"_({len(entries)} entries; showing most important)_", ""]
             size = sum(len(line.encode("utf-8")) + 1 for line in kept)
             for entry in sorted(entries, key=lambda e: (e.importance, e.updated), reverse=True):
-                line = f"- [[{entry.id}]] {entry.text.replace(chr(10), ' ')[:80]}\n"
+                line = f"- [[{entry.id}]] {entry.safe_text.replace(chr(10), ' ')[:80]}\n"
                 if size + len(line.encode("utf-8")) > INDEX_CAP_BYTES:
                     break
                 kept.append(line.rstrip())
@@ -954,6 +959,64 @@ SECRET_HINTS = (
 def _looks_secret(body: str) -> bool:
     low = body.lower()
     return any(hint in low for hint in SECRET_HINTS)
+
+
+REDACTED = "[redacted]"
+
+# Body-redaction policy (the single funnel for persisted text; enforced by
+# Entry.safe_text and save()). A value is redacted only when it is *bound* to a
+# credential key by "=" or ":" and looks credential-shaped (a known literal, at
+# least 12 chars, or containing a digit), or when it is a recognisable
+# credential literal / bearer token appearing anywhere. Prose that merely
+# mentions a credential word ("rotate the atlas password policy quarterly") is
+# preserved verbatim.
+_SECRET_KEY = (
+    r"(?:client[_-]?secret|private[_-]?key|access[_-]?token|auth[_-]?token"
+    r"|refresh[_-]?token|api[_-]?key|apikey|passwd|password|secret|token)"
+)
+_SECRET_LITERAL = (
+    r"(?:sk-[A-Za-z0-9_-]{8,}"
+    r"|ghp_[A-Za-z0-9]{20,}"
+    r"|github_pat_[A-Za-z0-9_]{20,}"
+    r"|xox[baprs]-[A-Za-z0-9-]{10,}"
+    r"|AKIA[0-9A-Z]{12,}"
+    r"|eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,})"
+)
+_BOUND_SECRET = re.compile(
+    rf"\b(?P<key>{_SECRET_KEY})\b(?P<sep>\s*[:=]\s*)(?P<val>\"[^\"]+\"|'[^']+'|[^\s,;.]+)",
+    re.IGNORECASE,
+)
+_LITERAL_SECRET = re.compile(_SECRET_LITERAL)
+_BEARER_SECRET = re.compile(
+    r"\b(?P<key>bearer\s+)(?P<val>[A-Za-z0-9._-]{20,})", re.IGNORECASE
+)
+
+
+def _credential_shaped(value: str) -> bool:
+    core = value.strip().strip("\"'")
+    if not core:
+        return False
+    if _LITERAL_SECRET.search(core):
+        return True
+    if len(core) >= 12:
+        return True
+    return any(ch.isdigit() for ch in core)
+
+
+def redact_secrets(text: str) -> str:
+    """Replace credential *values* in text with [redacted]; leave prose intact."""
+    if not text:
+        return text
+
+    def _bound(match) -> str:
+        if _credential_shaped(match.group("val")):
+            return f"{match.group('key')}{match.group('sep')}{REDACTED}"
+        return match.group(0)
+
+    out = _BOUND_SECRET.sub(_bound, text)
+    out = _LITERAL_SECRET.sub(REDACTED, out)
+    out = _BEARER_SECRET.sub(lambda m: f"{m.group('key')}{REDACTED}", out)
+    return out
 
 
 def _normalize(text: str) -> str:
