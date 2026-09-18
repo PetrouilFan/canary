@@ -54,6 +54,7 @@ class _Turn:
     error: str = ""
     cancelled: bool = False
     workers: list[str] = field(default_factory=list)
+    budget_baseline: int = 0
 
 
 def _parse_args(raw: str) -> tuple[dict, str]:
@@ -361,6 +362,11 @@ class Agent:
         max_model_calls = int(config.get("max_model_calls_per_turn", 64))
         max_tool_calls = int(config.get("max_tool_calls_per_turn", 128))
         turn_timeout = float(config.get("turn_timeout_s", 1800)) or 1800.0
+        budget_daily = self._budget_daily()
+        budget_enforced = budget_daily > 0 and bool(
+            config.get("budget.enforce", False)
+        )
+        turn.budget_baseline = self._tokens_today_total()
         while True:
             if self._is_cancelled(turn):
                 turn.cancelled = True
@@ -372,6 +378,17 @@ class Agent:
             if turn.model_calls >= max_model_calls:
                 turn.limit_hit = "model call limit"
                 self._append_system(turn, "[system] model call limit reached; stopping")
+                return
+            if budget_enforced and self._budget_used(turn) >= budget_daily:
+                turn.limit_hit = "token budget"
+                self._append_system(turn, "[system] token budget reached; stopping")
+                self.log.info(
+                    "budget_stop",
+                    session_id=turn.session.id,
+                    model_calls=turn.model_calls,
+                    used=self._budget_used(turn),
+                    daily=budget_daily,
+                )
                 return
             self._maybe_prune(turn)
             self._maybe_nudge(turn)
@@ -808,24 +825,39 @@ class Agent:
         self._check_budget()
 
     def _check_budget(self) -> None:
-        daily = int(self.config.get("budget.daily_tokens", 0) or 0)
+        daily = self._budget_daily()
         if daily <= 0:
             return
-        today = self.log.tokens_today()
-        used = int(today.get("tokens_in", 0)) + int(today.get("tokens_out", 0))
+        used = self._tokens_today_total()
         warn_at = float(self.config.get("budget.warn_at", 0.8) or 0.8)
         if used >= daily * warn_at:
-            self.log.warn("budget_warning", used=used, daily=daily)
+            ratio = round(used / daily, 4)
+            self.log.warn("budget_warning", used=used, daily=daily, ratio=ratio)
+            self.log.metric(
+                kind="budget_warning",
+                budget_used=used,
+                budget_daily=daily,
+                budget_ratio=ratio,
+            )
+
+    def _budget_daily(self) -> int:
+        return int(self.config.get("budget.daily_tokens", 0) or 0)
+
+    def _tokens_today_total(self) -> int:
+        today = self.log.tokens_today()
+        return int(today.get("tokens_in", 0)) + int(today.get("tokens_out", 0))
+
+    def _budget_used(self, turn: _Turn) -> int:
+        """Turn-entry baseline plus this turn's in-process usage."""
+        return turn.budget_baseline + turn.tokens_in + turn.tokens_out
 
     def _budget_exhausted(self) -> bool:
         if not bool(self.config.get("budget.enforce", False)):
             return False
-        daily = int(self.config.get("budget.daily_tokens", 0) or 0)
+        daily = self._budget_daily()
         if daily <= 0:
             return False
-        today = self.log.tokens_today()
-        used = int(today.get("tokens_in", 0)) + int(today.get("tokens_out", 0))
-        return used >= daily
+        return self._tokens_today_total() >= daily
 
     def _post_turn(self, session: Session, message: str, turn: _Turn) -> None:
         if self.is_worker or turn.cancelled:
