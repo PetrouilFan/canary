@@ -1,5 +1,9 @@
 # Canary
 
+[![CI](https://github.com/PetrouilFan/canary/actions/workflows/ci.yml/badge.svg)](https://github.com/PetrouilFan/canary/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue.svg)](https://www.python.org/downloads/)
+
 Canary is a minimal, modular, self-improving agent harness. It runs as a
 single Python process per copy, exposes an OpenAI-compatible HTTP API plus an admin
 API, keeps a durable memory store shared across copies, and can modify, test and
@@ -35,6 +39,7 @@ complete implementation of it. Intentional differences are documented in
 | [docs/http-api.md](docs/http-api.md) | HTTP API reference (OpenAI + admin) |
 | [docs/development.md](docs/development.md) | Repo layout, tests, dev workflow, how to extend |
 | [docs/deviations.md](docs/deviations.md) | Implementation vs. spec differences and rationale |
+| [CHANGELOG.md](CHANGELOG.md) | Release history |
 
 ## Status
 
@@ -180,3 +185,11 @@ CANARY_ROOT/
     SOUL.md PERSONALITY.md INSTRUCTIONS.md
     governance.yaml models.yaml harness.yaml .env
 ```
+
+## License
+
+Released under the [MIT License](LICENSE).
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md).
