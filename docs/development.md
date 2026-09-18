@@ -97,12 +97,12 @@ curl -s localhost:18090/v1/chat/completions -H "Authorization: Bearer $HARNESS_A
   -d '{"model":"main","messages":[{"role":"user","content":"hello"}]}' | jq -r '.choices[0].message.content'
 ```
 
-A live publish is just `POST /agent/propose` with a patch and a motivation; watch
+A live publish is a single `POST /agent/propose` with a patch and a motivation; watch
 `e2e-root/shared/data/deploys.jsonl` and the release dirs appear. Remember that
 releases are built from the staging snapshot taken at `init`; after changing repo
 code, re-init or publish a patch that contains your change.
 
-## Adding things
+## Extending the harness
 
 ### A built-in tool
 
@@ -111,7 +111,7 @@ code, re-init or publish a patch that contains your change.
    `__call__(...) -> str`.
 2. Append it to `BUILTIN_TOOLS` (order is deterministic; `specs()` sorts anyway).
 3. Add it to `EXPECTED_TOOLS` in `tests/test_boot.py`.
-4. If it needs harness support that doesn't exist yet, add the method to
+4. If it requires harness support that does not exist yet, add the method to
    `Agent` (tools call `self.harness.<method>`).
 
 Rules: never raise from `__call__` — return `error: ...` strings; keep output
@@ -151,22 +151,19 @@ check classes through `ToolRegistry.extension_modules()`.
   atomic `active.json` swap; never overwrite the active index in place.
 - **ONNX single-text embedding.** Quantized ONNX embeddings are not
   batch-composition-invariant; `Memory._embed_each` embeds one text at a time for
-  that backend. Do not "optimize" it back to batches.
+  that backend. Do not reintroduce batching for that backend.
 - Avoid `pkill -f canary` while developing servers — the pattern matches the
   invoking shell. Track PIDs and use `kill -TERM <pid>` (or
   `util.kill_process_group`).
 
-## Commit history
+## Commit conventions
 
-Commits are phased and self-describing, roughly one per module/feature wave:
+Commits are phased, one logical change per commit, with self-describing messages:
 
-```
-scaffold → core foundations → memory → sessions → context → governance+tools →
-jobs+evals → agent loop → api+cli → unit tests → integration tests →
-embeddings fix → health/api handover fixes → docs
-```
-
-Keep `ruff check canary/ tests/` and both test suites green before each commit.
+- `scope: imperative summary` (for example `core: memory retrieval and conflict
+  surfacing`).
+- Keep `ruff check canary/ tests/` and both test suites green before each commit.
+- Never rewrite published history; fix forward instead.
 
 ## Debugging checklist
 
@@ -175,7 +172,7 @@ Keep `ruff check canary/ tests/` and both test suites green before each commit.
 | `/ready` 503 | Body `reason`; `config.errors`; missing model `base_url`/`context_length` |
 | Model calls fail | `shared/logs/harness.log` (`model_call_failed`), rate limit file, key env |
 | Publish rejected | `deploys.jsonl` row `error`, patch file under `data/patches/proposed/`, staging `git status` |
-| Canary child won't boot | `shared/data/canary/{port}.log` |
+| Canary child fails to boot | `shared/data/canary/{port}.log` |
 | Extension not loading | `GET /agent/tools` → `reload_errors`; run the declared self-test directly |
 | Memory search degraded | `harness.log` `embedding_*` events; `embedding.backend` config |
 | Stale lock | `shared/` lock holder metadata; `canary unlock --nonce` |

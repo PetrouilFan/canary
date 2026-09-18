@@ -33,7 +33,7 @@ Helpers:
 | `_auth_headers()` | Bearer header from `HARNESS_API_KEY` |
 | `_probe_ready(port, timeout)` | GET `/ready`; accepts 200 or 503 (process alive) |
 | `_http_json(method, url, payload)` | httpx request returning parsed JSON |
-| `_print_json(obj)` | pretty JSON output |
+| `_print_json(obj)` | formatted JSON output |
 | `_project_root()` | walks up from `cli.py` for `pyproject.toml` |
 
 Commands: `init`, `run`, `serve`, `eval`, `diagnose`, `revert`, `status`,

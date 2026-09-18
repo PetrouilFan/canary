@@ -1,8 +1,8 @@
 # Implementation notes and deviations from the spec
 
-The authoritative specification is `/home/petrouil/Obsidian/10-Projects/canary/spec.md`
-(v2.3, "Canary — Agent Harness Spec"). This implementation follows it closely;
-this page records every intentional difference and the reasoning behind it, so a
+The authoritative specification (v2.3, "Canary — Agent Harness Spec") is
+maintained outside this repository. This implementation follows it closely; this
+page records every intentional difference and the reasoning behind it, so a
 future maintainer does not "fix" a deviation back into a bug.
 
 ## Deviations

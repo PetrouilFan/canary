@@ -174,7 +174,7 @@ Candidates are compared against a cached baseline keyed by
 | Situation | What to do |
 | --- | --- |
 | Publish says "another copy is publishing" | Wait; the holder metadata in the error shows `pid`, `host`, `op`, `started`, `nonce` |
-| Holder process is dead | Nothing — `flock` is released by the kernel; just retry |
+| Holder process is dead | None — `flock` is released by the kernel; retry |
 | You must break a live lock | `canary unlock --nonce <nonce>` refuses while the holder is alive; stop the holder first |
 | Session answers 409 | Another turn is running and the client used `fail_fast`; retry later |
 
@@ -286,7 +286,7 @@ jq -r '[.release_id, .pass_rate] | @tsv' shared/data/evals_summary.jsonl
 
 | Symptom | Action |
 | --- | --- |
-| Publish failed halfway, staging dirty | Just publish again; `_recover` rolls back by `publish.state.json` step |
+| Publish failed halfway, staging dirty | Publish again; `_recover` rolls back by `publish.state.json` step |
 | `current` points at a non-green release | Restart the copy; boot recovery reverts to the newest green |
 | Old child still serving after promotion | Check `ps` for `canary serve`; the parent should exit within `drain_timeout_s` |
 | Stuck lock, holder dead | Retry; lock auto-releases. If a live process holds it, `canary unlock --nonce N` |

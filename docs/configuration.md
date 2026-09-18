@@ -108,9 +108,9 @@ exported variable always beats the `.env` file. Keep `HARNESS_API_KEY` in an
 ```yaml
 models:
   main:
-    provider: openai          # "openai" or "mock"
-    model: openrouter/openrouter/free
-    base_url: http://localhost:20128/v1
+    provider: openai          # "openai" (any OpenAI-compatible endpoint) or "mock"
+    model: gpt-4.1-mini
+    base_url: https://api.openai.com/v1
     api_key_env: HARNESS_MODEL_API_KEY
     context_length: 200000    # required, no fallback
     temperature: 0.7          # optional per-role generation params
@@ -118,8 +118,8 @@ models:
     max_tokens: null
   compression:
     provider: openai
-    model: openrouter/openrouter/free
-    base_url: http://localhost:20128/v1
+    model: gpt-4.1-mini
+    base_url: https://api.openai.com/v1
     api_key_env: HARNESS_MODEL_API_KEY
     context_length: 200000
     temperature: 0.0          # compression defaults to deterministic

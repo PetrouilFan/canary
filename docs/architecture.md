@@ -112,7 +112,7 @@ Never edit state files in place.
    compaction and a retry.
 5. Tool calls are validated against governance (for `write`/`edit`), dispatched,
    and their results appended atomically with the call (never split, so pruning
-   can't orphan a result).
+   cannot orphan a result).
 6. After the final assistant message: extraction (gated), consolidation when
    idle, metrics, deploy-audit-friendly logging, `end_turn`.
 

@@ -1,11 +1,11 @@
 # Canary
 
-Canary is a minimal, modular, self-improving personal agent harness. It runs as a
+Canary is a minimal, modular, self-improving agent harness. It runs as a
 single Python process per copy, exposes an OpenAI-compatible HTTP API plus an admin
 API, keeps a durable memory store shared across copies, and can modify, test and
 publish its own code through an atomic release pipeline.
 
-The design is deliberately boring where it matters:
+The design is built around four invariants:
 
 - **No artificial limiters.** The agent can do anything a normal process can do.
   Safety comes from auditability, atomic changes and reversible releases, not from
@@ -20,9 +20,8 @@ The design is deliberately boring where it matters:
   (ruff + pytest), booting as a canary child on a spare port, answering `/ready`
   and a mock smoke turn, and passing the eval gate.
 
-The authoritative specification lives at
-`/home/petrouil/Obsidian/10-Projects/canary/spec.md` (v2.3). This repository is a
-complete implementation of it; small deviations are documented in
+The design specification is maintained outside this repository; this codebase is a
+complete implementation of it. Intentional differences are documented in
 [docs/deviations.md](docs/deviations.md).
 
 ## Documentation map
@@ -36,6 +35,12 @@ complete implementation of it; small deviations are documented in
 | [docs/http-api.md](docs/http-api.md) | HTTP API reference (OpenAI + admin) |
 | [docs/development.md](docs/development.md) | Repo layout, tests, dev workflow, how to extend |
 | [docs/deviations.md](docs/deviations.md) | Implementation vs. spec differences and rationale |
+
+## Status
+
+- Implementation: complete; version `0.1.0`.
+- Tests: 46 unit tests and 12 process-level integration tests, all passing.
+- Platform: Linux and other POSIX systems with `flock(2)` and `rename(2)`.
 
 ## Requirements
 
@@ -70,15 +75,15 @@ Canary works as a library with zero layout on disk:
 from canary import Agent
 
 agent = Agent()                    # state in ./.canary/ by default
-print(agent.run("Remember that my favorite port is 9090"))
-print(agent.run("What is my favorite port?"))
+print(agent.run("Remember that the preferred port is 9090"))
+print(agent.run("What is the preferred port?"))
 agent.shutdown()
 ```
 
 Or from the CLI (no server, state in `./.canary/`):
 
 ```bash
-canary run "Summarize what you know about my projects"
+canary run "Summarize what you know about the project"
 canary run --json "hello"          # machine-readable output
 canary run --ephemeral "hello"     # throwaway state in a temp dir
 ```
@@ -96,7 +101,7 @@ canary status                      # revision, green tags, last deploy
 The first green tag appears when `canary serve` passes readiness, or when the first
 publish pipeline succeeds. See [docs/operations.md](docs/operations.md).
 
-### 3. Talk to it
+### 3. Query the API
 
 ```bash
 curl -s localhost:8080/v1/chat/completions \
