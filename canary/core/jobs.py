@@ -25,8 +25,10 @@ from .util import (
     ensure_dir,
     kill_process_group,
     mono,
+    parse_stamp,
     pid_alive,
     pid_start_time,
+    proc_usage,
     read_json,
     tail_lines,
     truncate,
@@ -299,6 +301,31 @@ class Jobs:
             out.append(job)
         return out
 
+    def _runtime_facts(self, job: Job) -> dict[str, Any]:
+        """Wall-clock elapsed and, while the pid lives, its cpu/memory usage.
+
+        Every field is None when it cannot be measured: usage is read from
+        ``/proc`` and gated on the pid start time, so a finished job (or a
+        recycled pid) reports None instead of another process's numbers.
+        """
+        usage = proc_usage(job.pid or 0, job.pid_start_time) if job.pid else None
+        return {
+            "cpu_time_s": usage["cpu_time_s"] if usage else None,
+            "max_rss_kb": usage["max_rss_kb"] if usage else None,
+            "elapsed_s": self._elapsed_s(job),
+        }
+
+    @staticmethod
+    def _elapsed_s(job: Job) -> float | None:
+        if not job.started:
+            return None
+        try:
+            start = parse_stamp(job.started)
+            end = parse_stamp(job.ended) if job.ended else time.time()
+        except ValueError:
+            return None
+        return max(0.0, round(end - start, 3))
+
     def status(self, job_id: str) -> dict[str, Any]:
         job = self._load(job_id)
         if job is None:
@@ -307,6 +334,7 @@ class Jobs:
         data["alive"] = job.status in ("pending", "running") and (
             job.id in self._procs or pid_alive(job.pid or 0, job.pid_start_time)
         )
+        data.update(self._runtime_facts(job))
         data["log_tail"] = tail_lines(job.log_path, 10)
         return data
 
@@ -373,6 +401,7 @@ class Jobs:
                 "agent_id": job.agent_id,
                 "session_id": job.session_id,
                 "pid": job.pid,
+                **self._runtime_facts(job),
                 "created": job.created,
                 "ended": job.ended,
                 "exit_code": job.exit_code,

@@ -375,6 +375,52 @@ def pid_alive(pid: int, start_time: str | None = None) -> bool:
     return True
 
 
+def proc_usage(pid: int, start_time: str | None = None) -> dict[str, Any] | None:
+    """CPU seconds and peak RSS of a live pid, or None once it is gone.
+
+    ``start_time`` gates the reading the same way :func:`pid_alive` does: when
+    it is given and does not match the pid's current kernel start time, the pid
+    was recycled and the returned numbers would belong to another process, so
+    the answer is None. ``cpu_time_s`` is utime+stime from ``/proc/{pid}/stat``
+    in seconds; ``max_rss_kb`` is ``VmHWM`` from ``/proc/{pid}/status`` (peak,
+    not current, so it stays meaningful for short jobs while they live).
+    """
+    if pid <= 0:
+        return None
+    try:
+        with open(f"/proc/{pid}/stat", encoding="utf-8") as fh:
+            content = fh.read()
+    except (FileNotFoundError, ProcessLookupError, PermissionError):
+        return None
+    try:
+        # comm may contain spaces/parens: split after the final ')'
+        rest = content.rsplit(")", 1)[1].split()
+        if start_time is not None and rest[19] != str(start_time):
+            return None
+        utime, stime = int(rest[11]), int(rest[12])
+    except (IndexError, ValueError):
+        return None
+    try:
+        ticks = os.sysconf("SC_CLK_TCK")
+    except (ValueError, OSError):  # pragma: no cover - not reachable on Linux
+        return None
+    if ticks <= 0:  # pragma: no cover - defensive
+        return None
+    return {"cpu_time_s": (utime + stime) / ticks, "max_rss_kb": _peak_rss_kb(pid)}
+
+
+def _peak_rss_kb(pid: int) -> int | None:
+    """Peak resident set size (VmHWM) in kB, or None if /proc has no answer."""
+    try:
+        with open(f"/proc/{pid}/status", encoding="utf-8") as fh:
+            for line in fh:
+                if line.startswith("VmHWM:"):
+                    return int(line.split()[1])
+    except (FileNotFoundError, ProcessLookupError, PermissionError):
+        return None
+    return None
+
+
 def kill_pid(pid: int, grace: float = 5.0) -> bool:
     """Terminate a single pid gracefully, then forcibly."""
     if not pid_alive(pid):
