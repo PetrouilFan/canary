@@ -107,7 +107,9 @@ def _write_text(path: Path, text: str, mode: int | None = None) -> None:
 
 def _git(repo: Path, *args: str) -> subprocess.CompletedProcess:
     return subprocess.run(
-        ["git", "-C", str(repo), *args], capture_output=True, text=True
+        ["git", "-C", str(repo), *util.GIT_IDENTITY, *args],
+        capture_output=True,
+        text=True,
     )
 
 

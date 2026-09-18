@@ -584,9 +584,18 @@ def truncate(text: str, limit: int, marker: str = "\n[... truncated ...]") -> st
 # git helpers
 # ---------------------------------------------------------------------------
 
+# Non-interactive identity: CI runners, containers and fresh servers may have
+# no user.name/user.email configured, and git refuses to create commits or
+# annotated tags without them.
+GIT_IDENTITY = (
+    "-c", "user.name=canary",
+    "-c", "user.email=canary@localhost",
+)
+
+
 def _git(repo: Path, *args: str) -> subprocess.CompletedProcess:
     return subprocess.run(
-        ["git", "-C", str(repo), *args],
+        ["git", "-C", str(repo), *GIT_IDENTITY, *args],
         capture_output=True,
         text=True,
         check=False,

@@ -31,6 +31,7 @@ from .config import Config
 from .evals import Evals
 from .observability import Log
 from .util import (
+    GIT_IDENTITY,
     FileLock,
     LockTimeout,
     atomic_symlink,
@@ -312,7 +313,7 @@ class Health:
 
     def _git(self, *args: str, timeout: float = 60.0) -> subprocess.CompletedProcess:
         return subprocess.run(
-            ["git", "-C", str(self.staging), *args],
+            ["git", "-C", str(self.staging), *GIT_IDENTITY, *args],
             capture_output=True, text=True, timeout=timeout, check=False,
         )
 
