@@ -63,6 +63,7 @@ class Job:
     cwd: str | None = None
     note: str | None = None
     meta: dict[str, Any] = field(default_factory=dict)
+    progress: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -377,8 +378,45 @@ class Jobs:
                 "exit_code": job.exit_code,
                 "persistent": job.persistent,
                 "command": truncate(job.command, 200),
+                "progress": job.progress,
             })
         return {"jobs": out, "count": len(out)}
+
+    # -- progress ----------------------------------------------------------
+
+    def report_progress(
+        self,
+        job_id: str,
+        *,
+        percent: float | None = None,
+        message: str | None = None,
+    ) -> dict[str, Any]:
+        """Record structured progress for a live job (spec 4.9).
+
+        Reached through this API - progress is never inferred from job output.
+        Partial updates merge: an omitted field keeps its previous value.
+        """
+        job = self._load(job_id)
+        if job is None:
+            return {"error": f"unknown job: {job_id}"}
+        if job.status not in ("pending", "running"):
+            return {"error": f"job {job_id} is {job.status}; not running"}
+        if percent is not None and not isinstance(percent, (int, float)):
+            return {"error": "percent must be a number in [0, 100]"}
+        prev = job.progress or {}
+        pct = prev.get("percent")
+        if percent is not None:
+            pct = max(0.0, min(100.0, float(percent)))
+        msg = prev.get("message")
+        if message is not None:
+            msg = truncate(str(message), 200)
+        job.progress = {"percent": pct, "message": msg, "updated_at": utc_now()}
+        if job.persistent:
+            self._persist(job)
+        self.logger.event(
+            "job_progress", job_id=job.id, percent=pct, message=truncate(str(msg or ""), 80)
+        )
+        return {"job_id": job.id, "status": job.status, "progress": job.progress}
 
     # -- control -----------------------------------------------------------
 
