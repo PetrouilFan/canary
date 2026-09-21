@@ -60,7 +60,12 @@ DEFAULTS: dict[str, Any] = {
         "inbox_max": 100,
     },
     "jobs": {"max_per_turn": 10, "max_concurrent": 32},
-    "tools": {"reload_debounce_s": 1.0, "archive_keep": 10, "bash_timeout_s": 120},
+    "tools": {
+        "reload_debounce_s": 1.0,
+        "archive_keep": 10,
+        "bash_timeout_s": 120,
+        "turn_output_budget": 24576,
+    },
     "evals": {
         "model": "main",
         "canary_tasks": 3,

@@ -300,6 +300,10 @@ Context assembly, pruning, spill, compression and nudges.
     released pins are annotated `[dependency pruned: ref]`), protects the last
     `pruning.recent_turns` (3) user turns, evicts lowest-scored first, inserts a
     `[system] Pruned N older units…` note.
+  - `enforce_turn_output_budget(messages, *, session=None, budget=None)` — caps the
+    tool-result characters one turn may append (`tools.turn_output_budget`, 24576;
+    `0` disables), spilling the largest results first via the same `data/tmp`
+    pointer used by prune; under-budget turns are byte-identical.
   - `summarize(messages, *, focus, model_client, session, save_memory=True)` —
     compression-role summary, trace in `data/tmp/summary_{stamp}.txt`, saved as a
     `context-summary` memory entry.

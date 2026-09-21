@@ -49,6 +49,8 @@ class _Turn:
     start: float = 0.0
     last_nudge: float = 0.0
     tool_failures: dict[str, int] = field(default_factory=dict)
+    tool_output_chars: int = 0
+    tool_outputs: list[dict] = field(default_factory=list)
     compacted: bool = False
     limit_hit: str = ""
     error: str = ""
@@ -521,16 +523,36 @@ class Agent:
             turn.session.append_message(
                 "tool", result, tool_call_id=call.id, name=call.name
             )
-            turn.messages.append(
-                {
-                    "role": "tool",
-                    "tool_call_id": call.id,
-                    "name": call.name,
-                    "content": result,
-                }
-            )
+            message = {
+                "role": "tool",
+                "tool_call_id": call.id,
+                "name": call.name,
+                "content": result,
+            }
+            turn.messages.append(message)
+            turn.tool_outputs.append(message)
+            turn.tool_output_chars += len(result)
+            self._enforce_turn_output_budget(turn)
             self._emit("tool", name=call.name, result=util.truncate(result, 2000))
         return ""
+
+    def _enforce_turn_output_budget(self, turn: _Turn) -> None:
+        """Bound the tool output this turn appends, spilling the largest first."""
+        budget = self.ctx.turn_output_budget
+        if budget <= 0 or turn.tool_output_chars <= budget:
+            return
+        spilled = self.ctx.enforce_turn_output_budget(
+            turn.tool_outputs, session=turn.session, budget=budget
+        )
+        turn.tool_output_chars = self.ctx.tool_chars(turn.tool_outputs)
+        if spilled:
+            self.log.event(
+                "turn_output_spilled",
+                session_id=turn.session.id,
+                count=len(spilled),
+                chars_after=turn.tool_output_chars,
+                budget=budget,
+            )
 
     def _run_tool(self, turn: _Turn, name: str, args: dict) -> str:
         result = self.tools.call(name, args)

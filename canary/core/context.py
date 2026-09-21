@@ -58,6 +58,11 @@ DEFAULT_TOOL_WEIGHT = 0.5
 # units
 # ---------------------------------------------------------------------------
 
+# Suffix of the pointer left behind by _spill_message; also the marker that
+# keeps the per-turn budget from spilling the same tool result twice.
+_SPILL_MARK = "(read it if needed) ...]"
+
+
 @dataclass
 class Unit:
     """Atomic pruning unit: an assistant turn plus the tool results it caused."""
@@ -203,6 +208,9 @@ class ContextEngine:
         )
         self.threshold = float(config.get("compression.threshold", 0.5))
         self.spill_threshold = int(config.get("compression.spill_threshold", 32768))
+        # Per-turn ceiling on tool-result characters appended by one turn;
+        # 0 disables it (spec: tools.turn_output_budget).
+        self.turn_output_budget = int(config.get("tools.turn_output_budget", 24576))
         self.nudges = list(config.get("compression.nudge_at", [0.8, 0.9, 0.95]))
         self.recent_turns = int(config.get("pruning.recent_turns", 3))
         self.pin_max = int(config.get("pruning.pin_max", 50))
@@ -432,26 +440,97 @@ class ContextEngine:
 
     def _spill(self, unit: Unit, session: Session, report: PruneReport) -> None:
         for msg in unit.messages:
-            if msg.get("role") != "tool":
+            self._spill_message(msg, session, report, min_chars=self.spill_threshold)
+
+    def _spill_message(
+        self,
+        msg: dict,
+        session: Session,
+        report: PruneReport,
+        *,
+        min_chars: int = 0,
+    ) -> bool:
+        """Write one tool result to the spill file and keep a short pointer."""
+        if not self._spillable(msg) or len(msg["content"]) <= min_chars:
+            return False
+        content = msg["content"]
+        cid = str(msg.get("tool_call_id") or util.new_nonce()[:8])
+        path = self.spill_dir / f"{session.id}_{cid}.out"
+        lines = content.splitlines()
+        head = "\n".join(lines[:100])
+        if len(head) > 8192:
+            head = head[:8192]
+        pointer = (
+            f"{head}\n[... {max(0, len(lines) - 100)} more lines; full output at {path} "
+            f"(read it if needed) ...]"
+        )
+        if len(pointer) >= len(content):
+            # A single huge line can make the pointer as big as the original;
+            # spilling then costs a file and saves nothing, so leave it alone.
+            return False
+        try:
+            util.atomic_write_text(path, content)
+        except OSError:
+            return False
+        msg["content"] = pointer
+        report.spilled.append(str(path))
+        return True
+
+    @staticmethod
+    def _spillable(msg: dict) -> bool:
+        """A tool result that has content and has not been spilled already."""
+        content = msg.get("content")
+        return (
+            msg.get("role") == "tool"
+            and isinstance(content, str)
+            and content
+            and _SPILL_MARK not in content
+        )
+
+    # -- per-turn tool-output budget -----------------------------------------
+
+    def tool_chars(self, messages: list[dict]) -> int:
+        """Total characters of tool results in ``messages``."""
+        return sum(
+            len(msg["content"])
+            for msg in messages
+            if msg.get("role") == "tool" and isinstance(msg.get("content"), str)
+        )
+
+    def enforce_turn_output_budget(
+        self,
+        messages: list[dict],
+        *,
+        session: Session | None = None,
+        budget: int | None = None,
+    ) -> list[str]:
+        """Spill the largest tool results until this turn's output fits budget.
+
+        ``messages`` must hold only the tool results appended in the current
+        turn: the budget bounds what the turn adds, not what it inherited. A
+        budget <= 0 disables the check and returns without touching the payload,
+        so short turns stay byte-identical. Returns the spill file paths.
+        """
+        limit = self.turn_output_budget if budget is None else budget
+        if limit <= 0 or session is None:
+            return []
+        total = self.tool_chars(messages)
+        if total <= limit:
+            return []
+        report = PruneReport()
+        ranked = sorted(
+            (msg for msg in messages if self._spillable(msg)),
+            key=lambda msg: len(msg["content"]),
+            reverse=True,
+        )
+        for msg in ranked:
+            if total <= limit:
+                break
+            before = len(msg["content"])
+            if not self._spill_message(msg, session, report):
                 continue
-            content = msg.get("content")
-            if not isinstance(content, str) or len(content) <= self.spill_threshold:
-                continue
-            cid = str(msg.get("tool_call_id") or util.new_nonce()[:8])
-            path = self.spill_dir / f"{session.id}_{cid}.out"
-            try:
-                util.atomic_write_text(path, content)
-            except OSError:
-                continue
-            lines = content.splitlines()
-            head = "\n".join(lines[:100])
-            if len(head) > 8192:
-                head = head[:8192]
-            msg["content"] = (
-                f"{head}\n[... {max(0, len(lines) - 100)} more lines; full output at {path} "
-                f"(read it if needed) ...]"
-            )
-            report.spilled.append(str(path))
+            total -= before - len(msg["content"])
+        return report.spilled
 
     def _compute_pins(
         self, units: list[Unit], recent_cut: int, report: PruneReport

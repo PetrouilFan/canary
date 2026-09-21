@@ -59,6 +59,7 @@ dot-path access is used everywhere.
 | `tools.reload_debounce_s` | `1.0` | Extension reload debounce |
 | `tools.archive_keep` | `10` | Archived extension versions per name |
 | `tools.bash_timeout_s` | `120` | Default `bash` timeout |
+| `tools.turn_output_budget` | `24576` | Chars of tool output a turn may append before the largest results spill (`0` disables) |
 | `evals.model` | `"main"` | Role used for eval runs |
 | `evals.canary_tasks` | `3` | Tasks per canary gate (`0` disables) |
 | `evals.gate` | `"warn"` | `off`, `warn` (mark flagged), `block` |
