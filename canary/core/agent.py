@@ -113,13 +113,15 @@ class Agent:
     ):
         if isinstance(config, Config):
             base = config
-            if workspace is not None and base.workspace is None:
-                base = Config(
-                    state_path=base.state_path,
-                    root=base.root,
-                    ephemeral=base.ephemeral,
-                    overrides=base.overrides,
-                    load_files=True,
+            if state_path is not None or workspace is not None or ephemeral:
+                # Explicit arguments win over a passed Config.  The copy keeps
+                # everything the config already resolved (root, values, models)
+                # and changes only what the caller named; a named state_path
+                # wins over ephemeral=True, which would otherwise relocate the
+                # records into a temp dir of its own.
+                base = base.derived(
+                    state_path=state_path,
+                    ephemeral=False if state_path is not None else (ephemeral or None),
                     workspace=workspace,
                 )
             self.config = base

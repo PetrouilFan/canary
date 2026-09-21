@@ -281,3 +281,46 @@ def test_run_task_scores_workspace_and_audit_checks(root: Path, log) -> None:
     )
     assert result["status"] == "ok", (result["reason"], result["checks"])
     assert result["checks_passed"] == result["checks_total"] == 3, result["checks"]
+
+@pytest.mark.timeout(120)
+def test_eval_run_keeps_its_records_out_of_the_live_state(root: Path, log) -> None:
+    """The eval agent's records land under scratch/state, never in the live root."""
+    sentinel = "EVAL-STATE-PROBE-5c1f"
+    script = [
+        {
+            "content": "",
+            "tool_calls": [
+                {"name": "bash", "arguments": {"command": f"echo {sentinel}"}}
+            ],
+        },
+        "DONE 5c1f",
+    ]
+    cfg = build_config(root, scripts={"main": script})
+    live_log = Path(cfg.state_path) / "logs" / "harness.log"
+    live_log.parent.mkdir(parents=True, exist_ok=True)
+    live_log.write_text("", encoding="utf-8")
+    task = EvalTask.from_dict(
+        _task_data(
+            "state-override",
+            prompt="run the probe, then answer in the required form",
+            setup="mkdir -p notes && printf '5c1f\n' > notes/release-5c1f.txt",
+            check=[
+                {"type": "regex", "value": r"^DONE 5c1f\s*$"},
+                {
+                    "type": "file_contains",
+                    "path": "audit:logs/harness.log",
+                    "value": "tool_call",
+                },
+            ],
+        )
+    )
+    result = Evals(cfg, log).run_task(
+        task, run_id="r1", model_role="main", release_id="test"
+    )
+    assert result["status"] == "ok", (result["reason"], result["checks"])
+    assert result["checks_passed"] == result["checks_total"] == 2
+    # The audit check reads the state dir the agent actually used, which the run
+    # deletes with its scratch dir; the live root's log must not have seen any
+    # of this run's tool calls.
+    assert sentinel not in live_log.read_text(encoding="utf-8", errors="replace")
+    assert live_log.read_bytes() == b""

@@ -289,6 +289,55 @@ class Config:
 
     # -- construction helpers ------------------------------------------------
 
+    def derived(
+        self,
+        *,
+        state_path: str | os.PathLike[str] | None = None,
+        ephemeral: bool | None = None,
+        workspace: str | os.PathLike[str] | None = None,
+    ) -> Config:
+        """Copy this config with only the named fields overridden.
+
+        Unlike re-running ``__init__``, everything already resolved is carried
+        over: ``root``, ``overrides``, ``values``, ``models`` (including mock
+        scripts) and the error lists.  Re-deriving them would re-read
+        ``models.yaml``/``governance.yaml`` from the *new* state directory,
+        which is empty when the caller points at a scratch dir.
+
+        ``ephemeral`` is only consulted as given: a named ``state_path`` is not
+        replaced by a temp directory (callers that name a directory have said
+        where the records must land).
+        """
+        clone = copy.copy(self)
+        clone._ephemeral_dir = None
+        clone.pre_errors = list(self.pre_errors)
+        clone.errors = list(self.errors)
+        clone.overrides = copy.deepcopy(self.overrides)
+        clone.values = copy.deepcopy(self.values)
+        clone.models = copy.deepcopy(self.models)
+        if workspace is not None:
+            ws = Path(workspace).expanduser()
+            if not ws.is_absolute():
+                ws = Path.cwd() / ws
+            clone.workspace = ws.resolve()
+        if state_path is not None:
+            resolved = Path(state_path).expanduser()
+            if not resolved.is_absolute():
+                resolved = Path.cwd() / resolved
+            clone.state_path = resolved.resolve()
+            clone.values["state_path"] = str(clone.state_path)
+            if ephemeral is not None:
+                clone.ephemeral = bool(ephemeral)
+        elif ephemeral:
+            clone._ephemeral_dir = tempfile.mkdtemp(prefix="canary-ephemeral-")
+            atexit.register(shutil.rmtree, clone._ephemeral_dir, ignore_errors=True)
+            clone.ephemeral = True
+            clone.state_path = Path(clone._ephemeral_dir) / "state"
+            clone.values["state_path"] = str(clone.state_path)
+        elif ephemeral is not None:
+            clone.ephemeral = bool(ephemeral)
+        return clone
+
     @classmethod
     def from_env(cls) -> Config:
         return cls()
