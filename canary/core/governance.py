@@ -99,7 +99,20 @@ class Governance:
     # -- evaluation ------------------------------------------------------
 
     def candidates(self, path: str | Path) -> list[str]:
-        """Return path rendered relative to root and to the state store."""
+        """Return path rendered relative to root, the state store and the workspace.
+
+        A target inside ``config.workspace`` is additionally rendered as
+        ``shared/workspace/<rel>``.  The configured workspace *is* the agent's
+        writable work area - it is operator/runner-set, not model-set - so the
+        default ``shared/workspace/**`` allow pattern is meant to cover it, and
+        gating that on how the records are stored would answer a different
+        question.  The entry is appended, so no existing candidate moves.
+
+        Consequence, stated plainly: if an operator points ``workspace`` at a
+        sensitive directory, this permits ``write``/``edit`` there by
+        declaration.  Governance is advisory by design (spec 4.5) and the
+        decision is still logged with the real path.
+        """
         p = Path(path).expanduser()
         if not p.is_absolute():
             p = (Path.cwd() / p).resolve()
@@ -127,6 +140,14 @@ class Governance:
             out.append(p.relative_to(base).as_posix())
         except ValueError:
             pass
+        workspace = self.config.workspace
+        if workspace is not None:
+            try:
+                rel = p.relative_to(Path(workspace).resolve())
+            except ValueError:
+                rel = None
+            if rel is not None and rel.parts:
+                out.append("shared/workspace/" + rel.as_posix())
         out.append(p.as_posix().lstrip("/"))
         seen: list[str] = []
         for item in out:
