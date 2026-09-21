@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
 import yaml
 
-from canary.core.evals import Evals, EvalTask, eval_set_hash
+from canary.core.evals import Evals, EvalTask, _run_check, eval_set_hash, resolve_check_path
 from canary.core.util import read_jsonl
 from tests.conftest import build_config
 
@@ -207,3 +208,76 @@ def test_candidates_and_rollup_summary(root: Path, log) -> None:
     assert row["agent_id"]
     file_rows = list(read_jsonl(evals.summary_file))
     assert file_rows and file_rows[-1]["runs"] >= 1
+
+
+def test_audit_prefixed_paths_read_the_agent_state_dir(
+    root: Path, log
+) -> None:
+    """`audit:` checks see the agent's records; plain paths stay workspace-local."""
+    cfg = build_config(root)
+    workspace = cfg.state_path / "workspace"
+    workspace.mkdir(parents=True, exist_ok=True)
+    logs = cfg.state_path / "logs"
+    logs.mkdir(parents=True, exist_ok=True)
+    (logs / "harness.log").write_text(
+        json.dumps({"event": "tool_call", "tool": "write"}) + "\n", encoding="utf-8"
+    )
+    spec = {
+        "type": "file_contains",
+        "path": "audit:logs/harness.log",
+        "value": "tool_call",
+    }
+    result = _run_check(spec, "", workspace, {}, state_path=cfg.state_path)
+    assert result["pass"] is True, result
+    # the same relative path without the prefix is workspace-local, so it misses
+    miss = _run_check(
+        {"type": "file_exists", "path": "logs/harness.log"},
+        "",
+        workspace,
+        {},
+        state_path=cfg.state_path,
+    )
+    assert miss["pass"] is False, miss
+    assert resolve_check_path("audit:logs/harness.log", workspace, None) == (
+        workspace / "logs/harness.log"
+    )
+
+
+@pytest.mark.timeout(60)
+def test_run_task_scores_workspace_and_audit_checks(root: Path, log) -> None:
+    """End to end: response form + workspace artifact + the agent's own audit log."""
+    script = [
+        {
+            "content": "",
+            "tool_calls": [
+                {"name": "bash", "arguments": {"command": "cat notes/release.txt"}}
+            ],
+        },
+        "DONE 4af9fa3",
+    ]
+    cfg = build_config(root, scripts={"main": script})
+    task = EvalTask.from_dict(
+        _task_data(
+            "response-form-artifacts",
+            prompt="read notes/release.txt, then answer in the required form",
+            setup="mkdir -p notes && printf 'release 4af9fa3\n' > notes/release.txt",
+            check=[
+                {"type": "regex", "value": r"^DONE \S+\s*$"},
+                {
+                    "type": "file_contains",
+                    "path": "notes/release.txt",
+                    "value": "release 4af9fa3",
+                },
+                {
+                    "type": "file_contains",
+                    "path": "audit:logs/harness.log",
+                    "value": "tool_call",
+                },
+            ],
+        )
+    )
+    result = Evals(cfg, log).run_task(
+        task, run_id="r1", model_role="main", release_id="test"
+    )
+    assert result["status"] == "ok", (result["reason"], result["checks"])
+    assert result["checks_passed"] == result["checks_total"] == 3, result["checks"]

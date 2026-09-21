@@ -34,6 +34,10 @@ from .util import (
 )
 
 CHECK_TYPES = ("contains", "regex", "equals", "file_exists", "file_contains")
+#: Prefix marking a check path as relative to the eval agent's *state* directory
+#: (its own records: ``logs/harness.log``, ``metrics.jsonl``, ...) rather than
+#: the scratch workspace the task is scored in.
+AUDIT_PREFIX = "audit:"
 DEFAULT_TIMEOUT_S = 300
 
 
@@ -112,12 +116,36 @@ def eval_set_hash(tasks: list[EvalTask]) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:12]
 
 
+def resolve_check_path(
+    raw: Any, workspace: Path, state_path: Path | None = None
+) -> Path:
+    """Resolve a check path, ``audit:`` meaning the eval agent's state dir.
+
+    The agent's own audit records live in its state directory, outside the
+    workspace a check can otherwise see, so a check has to say when it wants
+    them: ``audit:logs/harness.log``.  Every other path stays workspace-relative.
+    """
+    text = str(raw)
+    if text.startswith(AUDIT_PREFIX):
+        base = state_path if state_path is not None else workspace
+        return base / text[len(AUDIT_PREFIX):]
+    return workspace / text
+
+
 def _run_check(
     spec: dict[str, Any],
     response: str,
     workspace: Path,
     custom: dict[str, EvalCheck],
+    state_path: Path | None = None,
 ) -> dict[str, Any]:
+    """Score one check spec.
+
+    ``file_exists``/``file_contains`` resolve in the scratch workspace, or in the
+    eval agent's state directory when the path carries the ``audit:`` prefix.
+    Extension checks keep the ``(value, response, workspace)`` interface; they
+    can call :func:`resolve_check_path` for the same resolution.
+    """
     ctype = str(spec.get("type") or "")
     value = spec.get("value")
     path = spec.get("path")
@@ -129,9 +157,9 @@ def _run_check(
         elif ctype == "equals":
             ok = response.strip() == str(value).strip()
         elif ctype == "file_exists":
-            ok = (workspace / str(path)).exists()
+            ok = resolve_check_path(path, workspace, state_path).exists()
         elif ctype == "file_contains":
-            target = workspace / str(path)
+            target = resolve_check_path(path, workspace, state_path)
             ok = target.exists() and str(value) in target.read_text(
                 encoding="utf-8", errors="replace"
             )
@@ -268,7 +296,16 @@ class Evals:
                         pass
             if status == "ok":
                 custom = self.custom_checks()
-                checks = [_run_check(c, response, workspace, custom) for c in task.check]
+                # `audit:` reads wherever this agent actually writes its own
+                # records.  Agent(state_path=...) is not authoritative (a Config
+                # argument wins), so ask the agent instead of the loop.
+                audit_state = Path(
+                    getattr(agent.config, "state_path", None) or scratch / "state"
+                )
+                checks = [
+                    _run_check(c, response, workspace, custom, state_path=audit_state)
+                    for c in task.check
+                ]
                 if not all(c["pass"] for c in checks):
                     status = "failed"
                     failed = [c for c in checks if not c["pass"]]

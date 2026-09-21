@@ -186,7 +186,10 @@ ever resumed automatically.
   tasks never import preflight code).
 - A run creates one ephemeral `Agent` per task in a scratch workspace and executes
   one turn, then scores `contains/regex/equals/file_exists/file_contains` checks
-  (plus extension-provided check types).
+  (plus extension-provided check types). Check paths resolve in that scratch
+  workspace; a path prefixed with `audit:` resolves in the eval agent's state
+  directory (`logs/harness.log`, `metrics.jsonl`), so a task can assert on the
+  agent's own trace.
 - Results append to `data/evals.jsonl` and roll up per `(release, agent)` into
   `data/evals_summary.jsonl` with a cross-copy divergence flag.
 - The canary gate compares candidate vs. cached baseline (keyed by release, eval

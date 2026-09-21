@@ -87,6 +87,31 @@ _SEEDED_EVAL_TASKS: list[dict[str, Any]] = [
             {"type": "contains", "value": "9090"},
         ],
     },
+    {
+        "id": "response-form-artifacts",
+        "tags": ["form", "artifacts", "seeded"],
+        "setup": "mkdir -p notes && printf '5c1f\\n' > notes/release-5c1f.txt",
+        "prompt": (
+            "The workspace contains a file notes/release-5c1f.txt. Read it, then "
+            'reply with exactly one line - "DONE <value>" where <value> is the '
+            "token stored in that file - and nothing else. Do not add prose, "
+            "headers or explanation."
+        ),
+        "timeout_s": 300,
+        "check": [
+            {"type": "regex", "value": r"^DONE 5c1f\s*$"},
+            {
+                "type": "file_contains",
+                "path": "notes/release-5c1f.txt",
+                "value": "5c1f",
+            },
+            {
+                "type": "file_contains",
+                "path": "audit:logs/harness.log",
+                "value": "tool_call",
+            },
+        ],
+    },
 ]
 
 
