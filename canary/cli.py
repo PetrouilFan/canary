@@ -112,6 +112,32 @@ _SEEDED_EVAL_TASKS: list[dict[str, Any]] = [
             },
         ],
     },
+    {
+        "id": "write-artifact",
+        "tags": ["form", "artifacts", "write", "seeded"],
+        "setup": "mkdir -p notes && printf '7d3a\\n' > notes/source.txt",
+        "prompt": (
+            "Read the file notes/source.txt - it holds a single token. Then "
+            "create the file notes/result.txt whose only line is that token, a "
+            "single space, and the marker canary-write-ok. Use the write tool. "
+            'When it is written, reply with one line - "WROTE" - and nothing '
+            "else."
+        ),
+        "timeout_s": 300,
+        "check": [
+            {"type": "file_exists", "path": "notes/result.txt"},
+            {
+                "type": "file_contains",
+                "path": "notes/result.txt",
+                "value": "7d3a canary-write-ok",
+            },
+            {
+                "type": "file_contains",
+                "path": "audit:logs/harness.log",
+                "value": "tool_call",
+            },
+        ],
+    },
 ]
 
 

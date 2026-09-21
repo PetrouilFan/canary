@@ -27,12 +27,24 @@ Creates:
   default), `harness.yaml` (full defaults dump).
 - `shared/.env` (mode 0600): `HARNESS_API_KEY` (from env or generated) plus live
   model values when `main` is not a mock provider.
-- Two seeded eval tasks: `memory-knowledge-update`, `memory-conflict-resolution`.
+- Four seeded eval tasks: `memory-knowledge-update`,
+  `memory-conflict-resolution`, `response-form-artifacts`, `write-artifact`.
+  (The last one is setup + agent-produced artifact: `setup` writes
+  `notes/source.txt`, the prompt makes the agent write `notes/result.txt`,
+  and the checks read that file plus the run's own `audit:logs/harness.log`.)
 - Git repos: `git init` in `shared/staging/` (commit "bootstrap: staging code
   repo") and `shared/` ("bootstrap: state store"), with a `.gitignore` covering
   `data/ logs/ workspace/ staging/ .env`.
 - Best-effort ONNX embedding download into `shared/data/models/` unless
   `--no-embedding`.
+
+Seeded eval tasks are written only when absent, so `canary init` never
+overwrites an operator-edited task. A seed fix therefore does not reach an
+existing root by itself: to refresh a seed, delete the file and re-run init
+(`rm shared/evals/<id>.yaml && canary init --root /srv/canary`), or edit the
+installed copy in place. The same no-clobber rule covers `SOUL.md`,
+`PERSONALITY.md` and `INSTRUCTIONS.md`; `governance.yaml`, `models.yaml` and
+`harness.yaml` are rewritten on every init.
 
 `init` never starts a server and never creates a green tag.
 
