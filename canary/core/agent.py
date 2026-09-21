@@ -309,6 +309,7 @@ class Agent:
         )
         self._local.turn = turn
         session.begin_turn()
+        self.ctx.begin_turn(session.id)
         session.clear_cancel()
         self._cancelled = threading.Event()
         self.jobs.begin_turn()
@@ -478,6 +479,7 @@ class Agent:
         turn.tokens_in += prompt
         turn.tokens_out += completion
         turn.completion_tokens += completion
+        self.ctx.note_provider_usage(prompt, turn.messages, turn.session.id)
         self.last_usage = {
             "prompt_tokens": prompt,
             "completion_tokens": completion,

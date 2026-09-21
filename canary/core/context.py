@@ -214,16 +214,66 @@ class ContextEngine:
         self.nudges = list(config.get("compression.nudge_at", [0.8, 0.9, 0.95]))
         self.recent_turns = int(config.get("pruning.recent_turns", 3))
         self.pin_max = int(config.get("pruning.pin_max", 50))
+        # Provider ground truth for token estimates: the last model call's own
+        # `prompt_tokens` together with the payload size it was measured against.
+        self._provider_tokens = 0
+        self._provider_chars = 0
+        self._provider_session: str | None = None
         self._stable_cache: str | None = None
         self._workspace_sig: tuple | None = None
         self._workspace_cache: str | None = None
 
     # -- token accounting ----------------------------------------------------
 
+    def chars_of(self, messages: list[dict]) -> int:
+        """Serialized size of a payload, the unit every estimate is built from."""
+        return len(json.dumps(messages, default=str))
+
+    def clear_provider_usage(self) -> None:
+        """Forget the provider anchor; estimates fall back to the char heuristic."""
+        self._provider_tokens = 0
+        self._provider_chars = 0
+        self._provider_session = None
+
+    def begin_turn(self, session_id: str) -> None:
+        """Drop a foreign anchor: an anchor only describes one session's history."""
+        if self._provider_session is not None and self._provider_session != session_id:
+            self.clear_provider_usage()
+
+    def note_provider_usage(
+        self, prompt_tokens: int, messages: list[dict], session_id: str | None = None
+    ) -> None:
+        """Record what the provider actually charged for this payload.
+
+        `prompt_tokens` covers the whole prompt the provider saw (identity, tool
+        specs, injections), so an anchor is never an under-count of a payload.
+        """
+        if int(prompt_tokens or 0) <= 0:
+            return
+        self._provider_tokens = int(prompt_tokens)
+        self._provider_chars = self.chars_of(messages)
+        if session_id is not None:
+            self._provider_session = session_id
+
     def count_tokens(self, messages: list[dict]) -> int:
-        """Heuristic: 4 characters per token over the serialized payload."""
-        raw = json.dumps(messages, default=str)
-        return max(1, len(raw) // 4)
+        """Tokens for the next request: provider ground truth, else a heuristic.
+
+        With an anchor the estimate is the last call's `prompt_tokens` plus
+        `chars // 3` for content appended since it was taken (JSON-escaped
+        payloads cost well over 4 chars/token, so 3 is deliberately
+        pessimistic); without one it is the cold-start fallback
+        `len(json.dumps) // 4`. The result is floored at that heuristic, so this
+        never reports fewer tokens than the old estimate did, and capped at the
+        provider's own `context_length`, which no request can exceed; past that
+        point the ratio is already maximal, so the cap wins over the floor.
+        """
+        raw = self.chars_of(messages)
+        old = max(1, raw // 4)
+        estimate = old
+        if self._provider_tokens:
+            appended = max(0, raw - self._provider_chars)
+            estimate = self._provider_tokens + (appended + 2) // 3
+        return max(1, min(self.context_length, max(old, estimate)))
 
     @property
     def usable(self) -> int:

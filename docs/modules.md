@@ -313,8 +313,11 @@ Context assembly, pruning, spill, compression and nudges.
   - `build(session, *, user_message="", tools=None, injections=None, summary="",
     max_history=None)` — full message list for the next model call.
 
-Usable context is `0.9 × context_length(main)`; token counting is
-`len(json.dumps(messages)) // 4`.
+Usable context is `0.9 × context_length(main)`. Token counting anchors on the
+provider's own `prompt_tokens` for the last call plus `chars // 3` for content
+appended since, floored at `len(json.dumps(messages)) // 4` and capped at
+`context_length`; with no prior call it is the `len // 4` heuristic alone. The
+anchor is dropped when a turn starts on a different session.
 
 ---
 
