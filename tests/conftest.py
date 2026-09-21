@@ -61,12 +61,12 @@ def build_config(
             models["models"][role]["provider"] = "mock"
             models["models"][role]["model"] = "mock"
             models["models"][role]["context_length"] = 32768
-        for role, script in (scripts or {}).items():
-            entry = models["models"].setdefault(
-                role, {"provider": "mock", "model": "mock", "context_length": 32768}
-            )
-            entry["provider"] = "mock"
-            entry["script"] = list(script)
+    for role, script in (scripts or {}).items():
+        entry = models["models"].setdefault(
+            role, {"provider": "mock", "model": "mock", "context_length": 32768}
+        )
+        entry["provider"] = "mock"
+        entry["script"] = list(script)
     (state / "models.yaml").write_text(yaml.safe_dump(models), encoding="utf-8")
     config = Config(root=Path(root_path), overrides=overrides or None)
     config.set("memory.git", False)
