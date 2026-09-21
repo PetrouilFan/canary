@@ -8,8 +8,10 @@ is then inflated and the next `_maybe_prune` (agent loop, top of every iteration
 runs - and can evict units, including the `[context summary]` message `compress`
 just inserted, i.e. partly undoing it - until the next main call re-anchors.
 
-Invariant under test: any rewrite invalidates the anchor.  A rewrite that changed
-nothing (prune with no eviction and no spill) leaves the anchor valid.
+Invariant under test: any rewrite re-anchors the estimate - rescaled to the new
+payload so the measured tokens-per-char is preserved, never left stale.  A
+rewrite that changed nothing (prune with no eviction and no spill) leaves the
+anchor valid.
 """
 
 from __future__ import annotations
@@ -86,8 +88,8 @@ def _engine(root: Path, *, context_length: int = CONTEXT_LENGTH) -> ContextEngin
 
 
 @pytest.mark.timeout(60)
-def test_compress_invalidates_the_anchor(root: Path) -> None:
-    """Engine-level compress: the estimate falls back to the char heuristic."""
+def test_compress_rescales_the_anchor(root: Path) -> None:
+    """Engine-level compress: the estimate rescales, it does not go stale."""
     ctx = _engine(root)
     messages = _messages()
     ctx.note_provider_usage(ANCHOR_TOKENS, messages, "s1")
@@ -98,9 +100,10 @@ def test_compress_invalidates_the_anchor(root: Path) -> None:
     assert _has_summary(out)
 
     heuristic = max(1, ctx.chars_of(out) // 4)
+    scaled = max(1, round(ANCHOR_TOKENS * ctx.chars_of(out) / ctx.chars_of(messages)))
     # before the fix: ANCHOR_TOKENS (12000), i.e. the pre-compress count for a
-    # payload the provider has never seen
-    assert ctx.count_tokens(out) == heuristic
+    # payload the provider has never seen; a plain clear would report `heuristic`
+    assert ctx.count_tokens(out) == max(heuristic, scaled)
     assert ctx.count_tokens(out) < ANCHOR_TOKENS
     assert ctx.usage_ratio(out) <= ctx.threshold
 
@@ -113,15 +116,18 @@ def test_compress_invalidates_the_anchor(root: Path) -> None:
 
 
 @pytest.mark.timeout(60)
-def test_prune_invalidates_the_anchor_only_when_it_rewrites(root: Path) -> None:
-    """Engine-level prune: a real eviction invalidates, a second pass is a no-op."""
+def test_prune_rescales_the_anchor_only_when_it_rewrites(root: Path) -> None:
+    """Engine-level prune: a real eviction rescales, a second pass is a no-op."""
     ctx = _engine(root)
     messages = _messages()
     ctx.note_provider_usage(ANCHOR_TOKENS, messages, "s1")
 
     kept, report = ctx.prune(messages, user_message="latest question 2")
     assert report.pruned_units > 0
-    assert ctx.count_tokens(kept) == max(1, ctx.chars_of(kept) // 4)
+    heuristic = max(1, ctx.chars_of(kept) // 4)
+    scaled = max(1, round(ANCHOR_TOKENS * ctx.chars_of(kept) / ctx.chars_of(messages)))
+    assert ctx.count_tokens(kept) == max(heuristic, scaled)
+    assert ctx.count_tokens(kept) < ANCHOR_TOKENS
 
     kept2, report2 = ctx.prune(kept, user_message="latest question 2")
     # before the fix: the stale anchor keeps the ratio over the threshold and

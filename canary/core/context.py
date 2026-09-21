@@ -235,6 +235,27 @@ class ContextEngine:
         self._provider_chars = 0
         self._provider_session = None
 
+    def rescale_provider_usage(self, messages: list[dict]) -> None:
+        """Re-anchor a rewritten payload at the measured tokens-per-char.
+
+        `note_provider_usage` records what the provider charged for one payload;
+        that count is not ground truth for a rewritten one.  Dropping to the
+        cold-start `len // 4` heuristic under-counts JSON-heavy payloads and
+        delays nudges until the next call re-anchors, so scale the anchor by the
+        new/old char ratio instead: the measured density is the best estimate
+        available until real usage arrives.  The next model call overwrites it.
+        """
+        if not self._provider_tokens or self._provider_chars <= 0:
+            return
+        new_chars = self.chars_of(messages)
+        if new_chars <= 0:
+            self.clear_provider_usage()
+            return
+        self._provider_tokens = max(
+            1, round(self._provider_tokens * new_chars / self._provider_chars)
+        )
+        self._provider_chars = new_chars
+
     def begin_turn(self, session_id: str) -> None:
         """Drop a foreign anchor: an anchor only describes one session's history."""
         if self._provider_session is not None and self._provider_session != session_id:
@@ -463,12 +484,12 @@ class ContextEngine:
             kept_messages.insert(insert_at, note_message)
         else:
             kept_messages = messages
-        # Same invariant as compress(): a rewrite invalidates the anchor.  Only
-        # a pass that actually changed the payload (evicted units, or replaced
-        # content with a spill pointer) invalidates it; a prune that found
-        # nothing to do must leave the anchor in place.
+        # Same invariant as compress(): a rewrite re-anchors.  Only a pass that
+        # actually changed the payload (evicted units, or replaced content with
+        # a spill pointer) rescales the anchor; a prune that found nothing to do
+        # must leave it in place.
         if report.pruned_units or report.spilled:
-            self.clear_provider_usage()
+            self.rescale_provider_usage(kept_messages)
         report.tokens_after = self.count_tokens(kept_messages)
         if self.log and report.pruned_units:
             self.log.info(
@@ -800,12 +821,13 @@ class ContextEngine:
         # Invariant: the provider anchor (prompt_tokens + the payload size it
         # was measured against) is ground truth only while the current payload
         # extends the anchored one.  `out` replaces that payload, so the anchor
-        # stops describing it (`appended` clamps to 0 and count_tokens would keep
-        # reporting the pre-compress count for a much smaller list, inflating the
-        # ratio and letting the next prune/nudge fire).  Drop it here, before the
-        # new size is reported; the next model call re-anchors against the real
-        # payload.
-        self.clear_provider_usage()
+        # must be rescaled, not kept (`appended` would clamp to 0 and
+        # count_tokens would keep reporting the pre-compress count for a much
+        # smaller list, inflating the ratio and letting the next prune/nudge
+        # fire) and not dropped (the cold heuristic under-counts and delays the
+        # nudge).  Preserving the measured density is the best estimate until
+        # the next model call re-anchors against the real payload.
+        self.rescale_provider_usage(out)
         report.tokens_after = self.count_tokens(out)
         if self.log:
             self.log.info(
