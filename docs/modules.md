@@ -317,7 +317,10 @@ Usable context is `0.9 × context_length(main)`. Token counting anchors on the
 provider's own `prompt_tokens` for the last call plus `chars // 3` for content
 appended since, floored at `len(json.dumps(messages)) // 4` and capped at
 `context_length`; with no prior call it is the `len // 4` heuristic alone. The
-anchor is dropped when a turn starts on a different session.
+anchor is dropped when a turn starts on a different session, and a rewrite
+(`compress()`, or a `prune()` that evicted or spilled) rescales it by the
+new/old char ratio so the measured tokens-per-char is kept rather than left
+stale or dropped to the cold heuristic.
 
 ---
 
