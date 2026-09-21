@@ -62,6 +62,10 @@ DEFAULT_TOOL_WEIGHT = 0.5
 # keeps the per-turn budget from spilling the same tool result twice.
 _SPILL_MARK = "(read it if needed) ...]"
 
+# Spill file named by a pointer that is already in the payload. Used to compact
+# a pointer once the ranked spill pass could not reach the turn budget.
+_SPILL_PATH_RE = re.compile(r"full output at (?P<path>\S+)")
+
 
 @dataclass
 class Unit:
@@ -587,6 +591,12 @@ class ContextEngine:
         turn: the budget bounds what the turn adds, not what it inherited. A
         budget <= 0 disables the check and returns without touching the payload,
         so short turns stay byte-identical. Returns the spill file paths.
+
+        The ranked spill pass leaves each pointer with a 100-line head, so six
+        or more big results can still exceed the budget. When that happens (and
+        only then) the pointers themselves are compacted to a one-line path
+        reference; if even those exceed the budget the pass stops and logs
+        ``turn_output_budget_unreachable`` rather than looping.
         """
         limit = self.turn_output_budget if budget is None else budget
         if limit <= 0 or session is None:
@@ -607,7 +617,75 @@ class ContextEngine:
             if not self._spill_message(msg, session, report):
                 continue
             total -= before - len(msg["content"])
+        if total > limit:
+            total = self._shrink_pointers(messages, limit, total)
+        if total > limit and self.log:
+            # The minimal pointers alone exceed the budget: there is no smaller
+            # form to reach, so stop instead of looping. The full outputs stay
+            # on disk and every pointer still names its file.
+            self.log.warn(
+                "turn_output_budget_unreachable",
+                chars_after=total,
+                budget=limit,
+                results=sum(1 for msg in messages if self._pointer_path(msg)),
+            )
         return report.spilled
+
+    def _shrink_pointers(self, messages: list[dict], limit: int, total: int) -> int:
+        """Compact already-spilled pointers until ``total`` fits ``limit``.
+
+        Largest first, one pass: every pointer goes straight to its minimal
+        one-line form, so there is nothing left to iterate over. A pointer that
+        cannot shrink (no path, no file on disk, or already minimal) is left
+        alone. Returns the resulting total.
+        """
+        ranked = sorted(
+            (msg for msg in messages if self._pointer_path(msg)),
+            key=lambda msg: len(msg["content"]),
+            reverse=True,
+        )
+        for msg in ranked:
+            if total <= limit:
+                break
+            before = len(msg["content"])
+            if not self._compact_pointer(msg):
+                continue
+            total -= before - len(msg["content"])
+        return total
+
+    @staticmethod
+    def _pointer_path(msg: dict) -> str | None:
+        """Path named by an already-spilled pointer, if any."""
+        content = msg.get("content")
+        if not isinstance(content, str) or _SPILL_MARK not in content:
+            return None
+        match = _SPILL_PATH_RE.search(content)
+        return match.group("path") if match else None
+
+    def _compact_pointer(self, msg: dict) -> bool:
+        """Shrink an already-spilled pointer to a one-line path reference.
+
+        The ranked spill pass leaves a 100-line head capped at 8192 chars, so a
+        handful of results can still exceed any budget. The minimal form names
+        the spill file, which is still on disk, so the output stays recoverable.
+        Returns True when the message actually shrank.
+        """
+        path = self._pointer_path(msg)
+        if path is None:
+            return False
+        try:
+            size = Path(path).stat().st_size
+        except OSError:
+            # Without the file on disk the pointer is the only record; keep it.
+            return False
+        content = str(msg["content"])
+        # Keep _SPILL_MARK: it is what stops a later pass from spilling the
+        # minimal pointer itself into a second file.
+        minimal = f"[... {size} chars; full output at {path} {_SPILL_MARK}"
+        if len(minimal) >= len(content):
+            return False
+        msg["content"] = minimal
+        return True
 
     def _compute_pins(
         self, units: list[Unit], recent_cut: int, report: PruneReport
