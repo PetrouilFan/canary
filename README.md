@@ -44,7 +44,7 @@ complete implementation of it. Intentional differences are documented in
 ## Status
 
 - Implementation: complete; version `0.1.0`.
-- Tests: 46 unit tests and 12 process-level integration tests, all passing.
+- Tests: 119 unit tests and 12 process-level integration tests, all passing.
 - Platform: Linux and other POSIX systems with `flock(2)` and `rename(2)`.
 
 ## Requirements

@@ -54,7 +54,7 @@ Initial release. The harness is feature-complete for the v2.3 specification.
   no on-disk layout.
 - **Documentation**: README plus `docs/` covering architecture, every module,
   configuration, operations, HTTP API, development, and known deviations.
-- **Tests**: 46 unit tests and 12 process-level integration tests covering
+- **Tests**: 119 unit tests and 12 process-level integration tests covering
   publish, locking, revert, fd handover, hot reload, injection, cross-process
   memory, port leasing, and the eval gate.
 
