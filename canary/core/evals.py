@@ -678,7 +678,9 @@ Write at most {n} candidate eval tasks as a single JSON array. Each task:
 "failure": "the observed failure this task captures"}}
 
 Only use check types: contains, regex, equals (checked against the response),
-file_exists, file_contains (checked in the workspace). Prefer few, sharp tasks.
+file_exists, file_contains (checked in the workspace; prefix the path with
+`audit:` to read the eval agent's own state, e.g. `audit:logs/harness.log`).
+Prefer few, sharp tasks.
 
 Signals:
 {signals}
