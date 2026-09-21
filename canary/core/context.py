@@ -463,6 +463,12 @@ class ContextEngine:
             kept_messages.insert(insert_at, note_message)
         else:
             kept_messages = messages
+        # Same invariant as compress(): a rewrite invalidates the anchor.  Only
+        # a pass that actually changed the payload (evicted units, or replaced
+        # content with a spill pointer) invalidates it; a prune that found
+        # nothing to do must leave the anchor in place.
+        if report.pruned_units or report.spilled:
+            self.clear_provider_usage()
         report.tokens_after = self.count_tokens(kept_messages)
         if self.log and report.pruned_units:
             self.log.info(
@@ -791,6 +797,15 @@ class ContextEngine:
             out.extend(unit.messages)
         for unit in recent:
             out.extend(unit.messages)
+        # Invariant: the provider anchor (prompt_tokens + the payload size it
+        # was measured against) is ground truth only while the current payload
+        # extends the anchored one.  `out` replaces that payload, so the anchor
+        # stops describing it (`appended` clamps to 0 and count_tokens would keep
+        # reporting the pre-compress count for a much smaller list, inflating the
+        # ratio and letting the next prune/nudge fire).  Drop it here, before the
+        # new size is reported; the next model call re-anchors against the real
+        # payload.
+        self.clear_provider_usage()
         report.tokens_after = self.count_tokens(out)
         if self.log:
             self.log.info(
