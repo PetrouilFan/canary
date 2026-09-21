@@ -25,6 +25,7 @@ DEFAULTS: dict[str, Any] = {
     "canary": {"port_range": [9000, 9100]},
     "max_model_calls_per_turn": 64,
     "max_tool_calls_per_turn": 128,
+    "max_assistant_chars_per_turn": 65536,
     "model_timeout_s": 120,
     "turn_timeout_s": 1800,
     "compression": {
@@ -530,6 +531,12 @@ def validate_harness(values: dict) -> list[str]:
         v = values.get(key)
         if not isinstance(v, int) or v <= 0:
             errors.append(f"{key} must be a positive integer, got {v!r}")
+    assistant_cap = values.get("max_assistant_chars_per_turn")
+    if not isinstance(assistant_cap, int) or assistant_cap < 0:
+        errors.append(
+            "max_assistant_chars_per_turn must be a non-negative integer, "
+            f"got {assistant_cap!r}"
+        )
     threshold = util.dot_get(values, "compression.threshold", 0.5)
     if not (0 < float(threshold) <= 1):
         errors.append(f"compression.threshold must be in (0, 1], got {threshold!r}")

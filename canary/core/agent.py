@@ -51,6 +51,7 @@ class _Turn:
     tool_failures: dict[str, int] = field(default_factory=dict)
     tool_output_chars: int = 0
     tool_outputs: list[dict] = field(default_factory=list)
+    assistant_chars: int = 0
     compacted: bool = False
     limit_hit: str = ""
     error: str = ""
@@ -366,6 +367,7 @@ class Agent:
         config = self.config
         max_model_calls = int(config.get("max_model_calls_per_turn", 64))
         max_tool_calls = int(config.get("max_tool_calls_per_turn", 128))
+        max_assistant_chars = int(config.get("max_assistant_chars_per_turn", 65536))
         turn_timeout = float(config.get("turn_timeout_s", 1800)) or 1800.0
         budget_daily = self._budget_daily()
         budget_enforced = budget_daily > 0 and bool(
@@ -393,6 +395,22 @@ class Agent:
                     model_calls=turn.model_calls,
                     used=self._budget_used(turn),
                     daily=budget_daily,
+                )
+                return
+            # A turn whose own assistant text exceeds the cap cannot be helped by
+            # compression: its messages sit in the recent window, which is kept
+            # verbatim. End the turn cleanly instead of looping _forced_compress.
+            if max_assistant_chars and turn.assistant_chars >= max_assistant_chars:
+                turn.limit_hit = "assistant output budget"
+                self._append_system(
+                    turn, "[system] assistant output budget reached; stopping"
+                )
+                self.log.info(
+                    "assistant_output_stop",
+                    session_id=turn.session.id,
+                    model_calls=turn.model_calls,
+                    chars=turn.assistant_chars,
+                    limit=max_assistant_chars,
                 )
                 return
             self._maybe_prune(turn)
@@ -502,6 +520,7 @@ class Agent:
         if calls:
             message["tool_calls"] = calls
         turn.messages.append(message)
+        turn.assistant_chars += len(message["content"])
 
     def _append_system(self, turn: _Turn, text: str) -> None:
         turn.messages.append({"role": "system", "content": text})

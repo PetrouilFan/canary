@@ -108,8 +108,11 @@ Never edit state files in place.
 4. The model loop runs up to `max_model_calls_per_turn` (64) calls and
    `max_tool_calls_per_turn` (128) tool calls, with cancellation checks between
    each step, a per-call timeout (`model_timeout_s`, 120s) and a whole-turn
-   timeout (`turn_timeout_s`, 1800s). Context overflow triggers one forced
-   compaction and a retry.
+   timeout (`turn_timeout_s`, 1800s). A turn that appends more than
+   `max_assistant_chars_per_turn` (65536) assistant characters stops at the top
+   of the loop, before the next model call, with `limit_hit` set - compression
+   cannot help, because the turn's own messages are in the recent window.
+   Context overflow triggers one forced compaction and a retry.
 5. Tool calls are validated against governance (for `write`/`edit`), dispatched,
    and their results appended atomically with the call (never split, so pruning
    cannot orphan a result).

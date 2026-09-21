@@ -25,6 +25,7 @@ dot-path access is used everywhere.
 | `canary.port_range` | `[9000, 9100]` | Port range for canary children |
 | `max_model_calls_per_turn` | `64` | Model calls allowed in one turn |
 | `max_tool_calls_per_turn` | `128` | Tool calls allowed in one turn |
+| `max_assistant_chars_per_turn` | `65536` | Assistant characters one turn may append before it stops (`0` disables) |
 | `model_timeout_s` | `120` | Per model call timeout |
 | `turn_timeout_s` | `1800` | Whole-turn timeout |
 | `compression.threshold` | `0.50` | Silent prune trigger (fraction of usable context) |
