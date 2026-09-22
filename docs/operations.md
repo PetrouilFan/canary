@@ -152,7 +152,8 @@ full pipeline synchronously (can take tens of seconds). Under the hood
 6. Commit the changed paths only, tag `green/{stamp}-{sha7}`.
 7. `git archive` into `releases/{release_id}/`.
 8. Boot a canary child on a free port (9000–9100), probe `/ready` for up to 30s,
-   run a mock-model smoke turn, then the eval gate.
+   run a mock-model smoke turn, then the eval gate (which scores the candidate's
+   own code — see below).
 9. **Red**: kill the child group, free the port, delete the release dir and tag,
    reset staging to the last green, keep serving. **Green**: atomically swap
    `current`, `SIGUSR1` the child, flip `/ready` to 503, drain
@@ -180,6 +181,14 @@ release").
 Candidates are compared against a cached baseline keyed by
 `(release_id, eval_set_hash, model_role)`, valid for `evals.cache_max_age_h`
 (168h). The first run measures and caches the candidate as the next baseline.
+
+The gate scores the **candidate's** code, not the running copy's: each task runs
+in a subprocess with `releases/<id>` first on `PYTHONPATH`, so a release is
+measured by the code it would actually serve (and a fix reaches the gate as soon
+as it is in the release, without restarting the running copy). If that subprocess
+cannot produce a report — for example a release tree without
+`canary/core/evals.py` — the gate logs `eval_gate_measure_failed` and reports
+`measure_failed: true` with `delta: null` rather than guessing a pass or fail.
 
 ## Locks and concurrency
 

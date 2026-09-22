@@ -437,9 +437,18 @@ Held-out evaluation tasks, the canary gate and the diagnosis job.
   - `run_task(...)` — expects `Agent` built with `ephemeral=True`,
     `self_modify=False`, scratch workspace; enforces `timeout_s` with a daemon
     thread + `agent.cancel()`.
+  - `run_under(tasks, *, code_dir, model_role, release_id, run_id, snippet,
+    timeout_s)` — scores `tasks` with the code in `code_dir` by running
+    `CHILD_EVAL_SNIPPET` under `python -c` with `code_dir` first on `PYTHONPATH`;
+    the candidate's own `run_task` supplies the scratch workspace and check
+    resolution. `has_eval_code(path)` guards a release tree. The gate measures the
+    candidate release this way, so it scores what it is about to promote.
   - `cache_path`, `cached_baseline`, `store_baseline`, `baseline`,
-    `canary_gate(candidate, baseline, *, tasks, role, force)` → `{enabled, delta,
-    flagged, pass_rate, baseline_pass_rate, tolerance, tasks, run_id}`. Cache key
+    `canary_gate(candidate, baseline, *, tasks, role, force, candidate_code_dir,
+    baseline_code_dir)` → `{enabled, delta, flagged, pass_rate,
+    baseline_pass_rate, tolerance, tasks, run_id, candidate_code_dir}`; when the
+    child cannot report, `{delta: null, flagged: false, measure_failed: true}`.
+    Cache key
     is `{release}.{eval_set_hash}.{role}.json`; expires after
     `evals.cache_max_age_h` (168). Gate modes: `off`, `warn` (default; deploy
     proceeds, marked `flagged` when delta < −tolerance), `block`.
