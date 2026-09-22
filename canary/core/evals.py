@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import queue
 import re
 import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -33,12 +35,43 @@ from .util import (
     utc_stamp,
 )
 
+#: Stable child entry point. The supervisor runs this snippet with the candidate's
+#: code first on PYTHONPATH, so the gate measures the code it is about to promote.
+#: It only uses the public Evals/Config/EvalTask surface, which every candidate
+#: has, so an older candidate is measured by its own (older) runner, not skipped.
+CHILD_EVAL_SNIPPET = """
+import json, sys
+from pathlib import Path
+from canary.core.config import Config
+from canary.core.evals import Evals, EvalTask
+from canary.core.observability import Log
+
+payload = json.load(sys.stdin)
+cfg = Config(root=Path(sys.argv[1]))
+tasks = [EvalTask.from_dict(t) for t in payload["tasks"]]
+report = Evals(cfg, Log(cfg)).run(
+    tasks, model_role=payload.get("model_role") or None,
+    release_id=payload["release_id"], run_id=payload.get("run_id") or None)
+print("CANARY_EVAL_RESULT " + json.dumps(report))
+"""
+CHILD_EVAL_MARKER = "CANARY_EVAL_RESULT "
+
 CHECK_TYPES = ("contains", "regex", "equals", "file_exists", "file_contains")
 #: Prefix marking a check path as relative to the eval agent's *state* directory
 #: (its own records: ``logs/harness.log``, ``metrics.jsonl``, ...) rather than
 #: the scratch workspace the task is scored in.
 AUDIT_PREFIX = "audit:"
 DEFAULT_TIMEOUT_S = 300
+
+
+def has_eval_code(path: Path | str | None) -> bool:
+    """True when ``path`` holds a canary tree the eval child can import.
+
+    A release directory is only a usable ``code_dir``/``baseline_code_dir`` if
+    it carries the eval module; ``current`` is a symlink that may point at an
+    empty ``releases`` directory before the first publish.
+    """
+    return bool(path) and (Path(path) / "canary" / "core" / "evals.py").is_file()
 
 
 class EvalCheck:
@@ -364,6 +397,55 @@ class Evals:
             raise value
         return str(value)
 
+    def run_under(
+        self,
+        tasks: list[EvalTask],
+        *,
+        code_dir: Path | str,
+        model_role: str | None = None,
+        release_id: str | None = None,
+        run_id: str | None = None,
+        snippet: str | None = None,
+        timeout_s: float = 1800,
+    ) -> dict[str, Any]:
+        """Score ``tasks`` with the code in ``code_dir`` (the candidate under test).
+
+        Same tasks, same root, same per-task scratch/state isolation and check
+        semantics as :meth:`run` - the only difference is that the runner, the
+        agent and the checks come from ``code_dir``. The result schema is
+        whatever that release's :meth:`run` returns, which is the schema
+        ``store_baseline``/``canary_gate`` already consume.
+        """
+        root = self.config.root or Path.cwd()
+        env = os.environ.copy()
+        env["PYTHONPATH"] = os.pathsep.join(
+            [str(code_dir)] + ([env["PYTHONPATH"]] if env.get("PYTHONPATH") else []))
+        env["CANARY_ROOT"] = str(root)
+        env["HARNESS_STATE_PATH"] = str(self.config.state_path)
+        if release_id:
+            env["HARNESS_RELEASE_ID"] = release_id
+        payload = {
+            "tasks": [t.to_dict() for t in tasks],
+            "model_role": model_role,
+            "release_id": release_id,
+            "run_id": run_id,
+        }
+        try:
+            proc = subprocess.run(
+                [sys.executable, "-c", snippet or CHILD_EVAL_SNIPPET, str(root)],
+                input=json.dumps(payload), capture_output=True, text=True,
+                env=env, cwd=str(root), timeout=timeout_s,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(f"eval child timed out after {timeout_s}s: {exc}") from exc
+        for line in (proc.stdout or "").splitlines():
+            if line.startswith(CHILD_EVAL_MARKER):
+                return json.loads(line[len(CHILD_EVAL_MARKER):])
+        tail = ((proc.stderr or "") + (proc.stdout or ""))[-800:]
+        raise RuntimeError(
+            f"eval child under {code_dir} produced no report "
+            f"(exit {proc.returncode}): {tail}")
+
     def run(
         self,
         tasks: list[EvalTask] | None = None,
@@ -451,7 +533,7 @@ class Evals:
 
     def baseline(
         self, release_id: str, role: str, tasks: list[EvalTask],
-        *, measure: bool = True,
+        *, measure: bool = True, code_dir: Path | str | None = None,
     ) -> dict[str, Any]:
         cached = self.cached_baseline(release_id, role, tasks)
         if cached is not None:
@@ -459,7 +541,9 @@ class Evals:
         if not measure:
             return {"release_id": release_id, "model_role": role, "pass_rate": None,
                     "results": [], "measured": False}
-        report = self.run(tasks, model_role=role, release_id=release_id)
+        report = self.run_under(tasks, code_dir=code_dir, model_role=role,
+                                release_id=release_id) if code_dir else \
+            self.run(tasks, model_role=role, release_id=release_id)
         return {**self.store_baseline(release_id, role, tasks, report),
                 "measured": True}
 
@@ -473,6 +557,8 @@ class Evals:
         tasks: list[EvalTask] | None = None,
         role: str | None = None,
         force: bool = False,
+        candidate_code_dir: Path | str | None = None,
+        baseline_code_dir: Path | str | None = None,
     ) -> dict[str, Any]:
         n = int(self.config.get("evals.canary_tasks", 3) or 0)
         if n <= 0 and not force:
@@ -483,8 +569,30 @@ class Evals:
         if not tasks:
             return {"enabled": False, "delta": None, "flagged": False,
                     "tasks": [], "reason": "no eval tasks"}
-        baseline = self.baseline(baseline_release_id, role, tasks)
-        candidate = self.run(tasks, model_role=role, release_id=candidate_release_id)
+        try:
+            baseline = self.baseline(baseline_release_id, role, tasks,
+                                     code_dir=baseline_code_dir)
+        except RuntimeError as exc:
+            # The baseline is the known-good release. If its on-disk code cannot
+            # be measured (a first publish may have no usable baseline dir), fall
+            # back to this process's code rather than failing the whole publish.
+            self.log.warn("eval_baseline_measure_failed", error=str(exc))
+            baseline = self.baseline(baseline_release_id, role, tasks)
+        try:
+            candidate = self.run_under(
+                tasks, code_dir=candidate_code_dir, model_role=role,
+                release_id=candidate_release_id) if candidate_code_dir else \
+                self.run(tasks, model_role=role, release_id=candidate_release_id)
+        except RuntimeError as exc:
+            # A gate that cannot measure is not evidence of a regression: report it
+            # and let the operator decide (mode=block does not kill the candidate).
+            self.log.warn("eval_gate_measure_failed", error=str(exc))
+            return {"enabled": True, "delta": None, "flagged": False,
+                    "pass_rate": None,
+                    "baseline_pass_rate": baseline.get("pass_rate"),
+                    "tolerance": float(self.config.get("evals.tolerance", 0.10) or 0.10),
+                    "tasks": [t.id for t in tasks], "candidate_code_dir": str(candidate_code_dir),
+                    "error": str(exc), "measure_failed": True}
         self.store_baseline(candidate_release_id, role, tasks, candidate)
         delta = None
         if baseline.get("pass_rate") is not None:
@@ -500,6 +608,7 @@ class Evals:
             "tolerance": tolerance,
             "tasks": [t.id for t in tasks],
             "run_id": candidate["run_id"],
+            "candidate_code_dir": str(candidate_code_dir) if candidate_code_dir else None,
         }
 
     # -- aggregation -------------------------------------------------------

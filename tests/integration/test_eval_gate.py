@@ -40,7 +40,10 @@ class _FakeGate:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str]] = []
 
-    def canary_gate(self, candidate, baseline, *, tasks=None, role=None, force=False):
+    def canary_gate(
+        self, candidate, baseline, *, tasks=None, role=None, force=False,
+        candidate_code_dir=None, baseline_code_dir=None,
+    ):
         self.calls.append((candidate, baseline))
         return {
             "enabled": True,

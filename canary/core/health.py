@@ -28,7 +28,7 @@ from typing import Any
 import httpx
 
 from .config import Config
-from .evals import Evals
+from .evals import Evals, has_eval_code
 from .observability import Log
 from .util import (
     GIT_IDENTITY,
@@ -771,7 +771,13 @@ class Health:
             if mode == "off":
                 eval_result = {"enabled": False, "reason": "gate off"}
             else:
-                eval_result = self.evals.canary_gate(candidate_id, current_id)
+                eval_result = self.evals.canary_gate(
+                    candidate_id, current_id,
+                    candidate_code_dir=release,
+                    baseline_code_dir=(
+                        current_rel if has_eval_code(current_rel) else None
+                    ),
+                )
                 if mode == "block" and eval_result.get("flagged"):
                     kill_process_group(child.pid)
                     self.ports.free(port)
