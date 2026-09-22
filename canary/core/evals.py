@@ -149,6 +149,33 @@ def eval_set_hash(tasks: list[EvalTask]) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:12]
 
 
+#: Files whose contents decide how a task is scored: the runner and the checks
+#: (``evals.py``) and the model loop that produces the response being graded
+#: (``agent.py``).  Two code trees that agree on both measure the same way, so
+#: they share a code identity.
+CODE_IDENTITY_FILES = ("canary/core/evals.py", "canary/core/agent.py")
+
+
+def code_identity(code_dir: Path | str | None = None) -> str | None:
+    """Short digest of the code that would measure a baseline *now*.
+
+    ``code_dir`` is the tree :meth:`Evals.run_under` would spawn (a release, or
+    a candidate); ``None`` means this process, which is what the in-process
+    fallback of :meth:`Evals.baseline` uses.  ``None`` is returned when that
+    tree cannot be read, so a cache entry is never reused on an identity we
+    could not compute.
+    """
+    base = Path(__file__).resolve().parents[2] if code_dir is None else Path(code_dir)
+    digest = hashlib.sha256()
+    for rel in CODE_IDENTITY_FILES:
+        try:
+            digest.update(rel.encode("utf-8"))
+            digest.update((base / rel).read_bytes())
+        except OSError:
+            return None
+    return digest.hexdigest()[:12]
+
+
 def resolve_check_path(
     raw: Any, workspace: Path, state_path: Path | None = None
 ) -> Path:
@@ -495,11 +522,26 @@ class Evals:
         return self.cache_dir / f"{release_id}.{digest}.{role}.json"
 
     def cached_baseline(
-        self, release_id: str, role: str, tasks: list[EvalTask]
+        self, release_id: str, role: str, tasks: list[EvalTask],
+        *, code_dir: Path | str | None = None,
     ) -> dict[str, Any] | None:
         path = self.cache_path(release_id, role, tasks)
         data = read_json(path, default=None)
         if not isinstance(data, dict):
+            return None
+        identity = code_identity(code_dir)
+        stored = data.get("code_identity")
+        if stored is None or identity is None or stored != identity:
+            # A baseline is evidence about the code that measured it and nothing
+            # else.  An entry written by another code tree - or by a release that
+            # predates identities, which is every legacy entry - is not the
+            # number this gate would measure now, so it is re-measured.
+            self.log.info(
+                "eval_cache_stale", release_id=release_id,
+                reason="unknown code identity" if (stored is None or identity is None)
+                else "code changed",
+                cached_code=stored or "unknown", current_code=identity or "unknown",
+            )
             return None
         max_age_h = float(self.config.get("evals.cache_max_age_h", 168) or 168)
         age_h = (time.time() - float(data.get("cached_at_unix") or 0)) / 3600.0
@@ -510,12 +552,13 @@ class Evals:
 
     def store_baseline(
         self, release_id: str, role: str, tasks: list[EvalTask],
-        report: dict[str, Any],
+        report: dict[str, Any], *, code_dir: Path | str | None = None,
     ) -> dict[str, Any]:
         payload = {
             "release_id": release_id,
             "model_role": role,
             "eval_set_hash": eval_set_hash(tasks),
+            "code_identity": code_identity(code_dir),
             "cached_at": utc_now(),
             "cached_at_unix": time.time(),
             "pass_rate": report["pass_rate"],
@@ -535,7 +578,7 @@ class Evals:
         self, release_id: str, role: str, tasks: list[EvalTask],
         *, measure: bool = True, code_dir: Path | str | None = None,
     ) -> dict[str, Any]:
-        cached = self.cached_baseline(release_id, role, tasks)
+        cached = self.cached_baseline(release_id, role, tasks, code_dir=code_dir)
         if cached is not None:
             return cached
         if not measure:
@@ -544,7 +587,8 @@ class Evals:
         report = self.run_under(tasks, code_dir=code_dir, model_role=role,
                                 release_id=release_id) if code_dir else \
             self.run(tasks, model_role=role, release_id=release_id)
-        return {**self.store_baseline(release_id, role, tasks, report),
+        return {**self.store_baseline(release_id, role, tasks, report,
+                                      code_dir=code_dir),
                 "measured": True}
 
     # -- canary gate -------------------------------------------------------
@@ -593,7 +637,8 @@ class Evals:
                     "tolerance": float(self.config.get("evals.tolerance", 0.10) or 0.10),
                     "tasks": [t.id for t in tasks], "candidate_code_dir": str(candidate_code_dir),
                     "error": str(exc), "measure_failed": True}
-        self.store_baseline(candidate_release_id, role, tasks, candidate)
+        self.store_baseline(candidate_release_id, role, tasks, candidate,
+                            code_dir=candidate_code_dir)
         delta = None
         if baseline.get("pass_rate") is not None:
             delta = round(candidate["pass_rate"] - float(baseline["pass_rate"]), 4)

@@ -180,7 +180,11 @@ release").
 
 Candidates are compared against a cached baseline keyed by
 `(release_id, eval_set_hash, model_role)`, valid for `evals.cache_max_age_h`
-(168h). The first run measures and caches the candidate as the next baseline.
+(168h) and only while the code that measured it is the code that would measure
+it now (the entry stores a `code_identity`, a digest of the measuring
+`canary/core/evals.py` + `canary/core/agent.py`; an entry from another code
+tree, or one written before identities existed, is re-measured). The first run
+measures and caches the candidate as the next baseline.
 
 The gate scores the **candidate's** code, not the running copy's: each task runs
 in a subprocess with `releases/<id>` first on `PYTHONPATH`, so a release is

@@ -3,13 +3,21 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 
 import pytest
 import yaml
 
-from canary.core.evals import Evals, EvalTask, _run_check, eval_set_hash, resolve_check_path
-from canary.core.util import read_jsonl
+from canary.core.evals import (
+    Evals,
+    EvalTask,
+    _run_check,
+    code_identity,
+    eval_set_hash,
+    resolve_check_path,
+)
+from canary.core.util import read_jsonl, utc_now
 from tests.conftest import build_config
 
 
@@ -324,3 +332,88 @@ def test_eval_run_keeps_its_records_out_of_the_live_state(root: Path, log) -> No
     # of this run's tool calls.
     assert sentinel not in live_log.read_text(encoding="utf-8", errors="replace")
     assert live_log.read_bytes() == b""
+
+
+def _seed_cache_entry(
+    evals: Evals, release: str, role: str, tasks: list[EvalTask], pass_rate: float,
+    *, identity: str | None,
+) -> Path:
+    """Write a baseline cache entry by hand, optionally with a code identity."""
+    path = evals.cache_path(release, role, tasks)
+    payload = {
+        "release_id": release,
+        "model_role": role,
+        "eval_set_hash": eval_set_hash(tasks),
+        "cached_at": utc_now(),
+        "cached_at_unix": time.time(),
+        "pass_rate": pass_rate,
+        "results": [
+            {"task_id": t.id, "pass": pass_rate >= 1.0, "checks_passed": 1,
+             "checks_total": 1, "tokens": 0, "latency_ms": 0}
+            for t in tasks
+        ],
+    }
+    if identity is not None:
+        payload["code_identity"] = identity
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
+
+
+def test_code_identity_tracks_the_measuring_tree(tmp_path: Path) -> None:
+    a, b = tmp_path / "a", tmp_path / "b"
+    for base in (a, b):
+        (base / "canary" / "core").mkdir(parents=True)
+        for name in ("evals.py", "agent.py"):
+            (base / "canary" / "core" / name).write_text(f"# {name}\n", encoding="utf-8")
+    assert code_identity(a) == code_identity(b)
+    assert code_identity(None) == code_identity(None)
+    (b / "canary" / "core" / "agent.py").write_text("# changed\n", encoding="utf-8")
+    assert code_identity(a) != code_identity(b)
+    (b / "canary" / "core" / "evals.py").unlink()
+    assert code_identity(b) is None
+
+
+@pytest.mark.timeout(120)
+def test_legacy_baseline_is_remeasured_not_reused(root: Path, log) -> None:
+    """A cache entry written before identities existed must not be trusted."""
+    cfg = build_config(root, scripts={"main": ["OK"], "compression": ["{}"]})
+    evals = Evals(cfg, log)
+    _write_task(cfg, "gate", _task_data("gate"))
+    tasks = evals.load_tasks()
+    path = _seed_cache_entry(evals, "rel-a", "main", tasks, 0.0, identity=None)
+    assert evals.cached_baseline("rel-a", "main", tasks) is None
+
+    gate = evals.canary_gate("rel-b", "rel-a", tasks=tasks, role="main")
+    # Reusing the 0.0 would have produced a fake delta of +1.0; the baseline is
+    # re-measured by this code (1.0), so the gate reports no change.
+    assert gate["baseline_pass_rate"] == pytest.approx(1.0)
+    assert gate["delta"] == pytest.approx(0.0)
+    assert gate["flagged"] is False
+    stored = json.loads(path.read_text(encoding="utf-8"))
+    assert stored["code_identity"] == code_identity(None)
+    assert stored["pass_rate"] == pytest.approx(1.0)
+
+
+@pytest.mark.timeout(120)
+def test_cache_is_reused_by_the_same_code_only(root: Path, tmp_path: Path, log) -> None:
+    cfg = build_config(root, scripts={"main": ["OK"], "compression": ["{}"]})
+    evals = Evals(cfg, log)
+    _write_task(cfg, "gate", _task_data("gate"))
+    tasks = evals.load_tasks()
+
+    _seed_cache_entry(evals, "rel-a", "main", tasks, 0.25,
+                      identity=code_identity(None))
+    hit = evals.cached_baseline("rel-a", "main", tasks)
+    assert hit is not None and hit["pass_rate"] == pytest.approx(0.25)
+    # ... but a tree that measures differently is not allowed to reuse it.
+    other = tmp_path / "other"
+    (other / "canary" / "core").mkdir(parents=True)
+    for name in ("evals.py", "agent.py"):
+        (other / "canary" / "core" / name).write_text("# other\n", encoding="utf-8")
+    assert evals.cached_baseline("rel-a", "main", tasks, code_dir=other) is None
+    assert evals.cached_baseline("rel-a", "main", tasks, code_dir=tmp_path / "gone") is None
+    fresh = evals.baseline("rel-a", "main", tasks, code_dir=other)
+    assert fresh["measured"] is True
+    stored = json.loads(evals.cache_path("rel-a", "main", tasks).read_text(encoding="utf-8"))
+    assert stored["code_identity"] == code_identity(other)
+    assert evals.cached_baseline("rel-a", "main", tasks, code_dir=other) is not None
