@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from canary.core import util
+from canary.core.codeid import package_identity
 from canary.core.config import Config
 
 
@@ -21,6 +22,8 @@ class Log:
         self.data: Path = config.data_path
         self.log_file: Path = config.state_path / "logs" / "harness.log"
         self.agent_id: str = config.get("agent.id", "unknown")
+        # Row header identity: the code this process runs, measured once.
+        self.code_id: str | None = package_identity()
 
     # -- base ---------------------------------------------------------------
 
@@ -29,6 +32,7 @@ class Log:
             "timestamp": util.utc_now(),
             "release_id": self.config.release_id,
             "commit_sha": self.config.commit_sha,
+            "code_id": self.code_id,
             "agent_id": self.agent_id,
         }
 

@@ -27,6 +27,7 @@ from typing import Any
 
 import httpx
 
+from .codeid import package_identity
 from .config import Config
 from .evals import Evals, has_eval_code
 from .observability import Log
@@ -184,6 +185,9 @@ class Health:
         self.listener_fd = listener_fd
         self.port = port
         self.drain_callback = drain_callback
+        # The code this process is actually executing, measured at start
+        # (canary/core/codeid.py).  Never derived from a release id.
+        self.code_id = package_identity()
         self.base_gate_override: tuple[bool, str] | None = None
         rng = config.get("canary.port_range") or [9000, 9100]
         self.ports = Ports(config.data_path, log, low=rng[0], high=rng[1])
@@ -250,6 +254,7 @@ class Health:
             "status": "ok",
             "release_id": self.config.release_id,
             "commit_sha": self.config.commit_sha,
+            "code_id": self.code_id,
             "agent_id": self.config.get("agent.id"),
             "pid": os.getpid(),
             "timestamp": utc_now(),
@@ -476,14 +481,38 @@ class Health:
             if lock.fd is not None:
                 lock.release()
         result["duration_ms"] = int((mono() - started) * 1000)
-        self.log.deploy(op=result.get("op", op), ok=bool(result.get("ok")),
-                        release_id=result.get("release_id"),
+        self.record_deploy(result, motivation=motivation, session_id=session_id)
+        return result
+
+    def record_deploy(self, result: dict[str, Any], *,
+                      motivation: str | None = None,
+                      session_id: str | None = None) -> None:
+        """Write the deploys.jsonl row, naming both sides of the deploy.
+
+        ``supervisor_code_id`` is the code this process runs, ``release_code_id``
+        the code the release it just deployed contains.  They differ whenever a
+        deploy changes code (normal, and the row says so) and whenever a stale
+        process keeps publishing releases it did not run (the 2026-09-18
+        incident).  ``commit_sha`` keeps its old meaning: the executor's commit.
+        """
+        deploy_release = result.get("release_id")
+        release_code_id = self.release_code_id(deploy_release)
+        result["supervisor_code_id"] = self.code_id
+        result["release_code_id"] = release_code_id
+        if self.code_id and release_code_id and release_code_id != self.code_id:
+            self.log.warn("deploy_code_mismatch", op=result.get("op"),
+                          release_id=deploy_release,
+                          supervisor_code_id=self.code_id,
+                          release_code_id=release_code_id)
+        self.log.deploy(op=result.get("op"), ok=bool(result.get("ok")),
+                        release_id=deploy_release,
+                        supervisor_code_id=self.code_id,
+                        release_code_id=release_code_id,
                         motivation=motivation, source_session=session_id,
                         eval_delta=(result.get("eval") or {}).get("delta"),
                         flagged=(result.get("eval") or {}).get("flagged"),
                         error=result.get("error"),
-                        duration_ms=result["duration_ms"])
-        return result
+                        duration_ms=result.get("duration_ms"))
 
     def _do_publish(self, lock: FileLock, patch: str, motivation: str | None,
                     session_id: str | None, started: float) -> dict[str, Any]:
@@ -760,6 +789,8 @@ class Health:
                     "exit_code": child.poll(),
                     "log_tail": self._log_tail(log_path)}
 
+        code_id = probe.get("code_id")
+        self._canary["code_id"] = code_id
         eval_result: dict[str, Any] = {"enabled": False}
         if eval_gate and int(self.config.get("evals.canary_tasks", 3) or 0) > 0:
             self.evals = self.evals or Evals(self.config, self.log)
@@ -821,10 +852,31 @@ class Health:
 
             threading.Thread(target=_drain, name="canary-drain", daemon=True).start()
         self.log.health_probe("canary_probe", "ok", 0,
-                              f"promoted={promoted} port={port}")
+                              f"promoted={promoted} port={port} "
+                              f"code_id={code_id}")
         return {"ok": True, "release_id": release_dir.name if release_dir else label,
                 "port": port, "child_pid": child.pid, "promoted": promoted,
-                "eval": eval_result}
+                "code_id": code_id, "eval": eval_result}
+
+    def child_code_id(self, base: str, headers: dict[str, str],
+                      port: int) -> str | None:
+        """Read the identity a spawned child reports about itself.
+
+        Only the child knows what it imported, so this is measured, not
+        assumed; a failed read is recorded as unknown, never as a match.
+        """
+        code_id: str | None = None
+        try:
+            response = httpx.get(f"{base}/health", headers=headers, timeout=5.0)
+            if response.status_code == 200:
+                value = response.json().get("code_id")
+                code_id = str(value) if value else None
+        except (httpx.HTTPError, ValueError):
+            code_id = None
+        self.log.health_probe("canary_identity",
+                              "ok" if code_id else "unknown", 0,
+                              f"port={port} code_id={code_id}")
+        return code_id
 
     def probe_child(self, port: int, timeout: float = 30.0,
                     api_key: str | None = None) -> dict[str, Any]:
@@ -849,6 +901,7 @@ class Health:
             return {"ok": False, "error": last}
         self.log.health_probe("canary_ready", "ok", (mono() - started) * 1000,
                               f"port={port}")
+        code_id = self.child_code_id(base, headers, port)
         try:
             smoke = httpx.post(f"{base}/agent/smoke", headers=headers, timeout=30.0)
         except httpx.HTTPError as exc:
@@ -858,7 +911,13 @@ class Health:
                     "error": f"smoke turn failed: {smoke.status_code} "
                              f"{smoke.text[:500]}"}
         self.log.health_probe("canary_smoke", "ok", 0, "mock turn passed")
-        return {"ok": True}
+        return {"ok": True, "code_id": code_id}
+
+    def release_code_id(self, release_id: str | None) -> str | None:
+        """Identity of the tree a release id names, or ``None`` if unknown."""
+        if not release_id:
+            return None
+        return package_identity(self.releases_dir / release_id / "canary")
 
     def unlock(self, nonce: str) -> dict[str, Any]:
         from .util import force_unlock, read_lock_meta
@@ -938,6 +997,7 @@ class Health:
             "draining": bool(self.state.get("draining")),
             "release_id": self.config.release_id,
             "commit_sha": self.config.commit_sha,
+            "code_id": self.code_id,
             "agent_id": self.config.get("agent.id"),
             "listener_fd": self.listener_fd,
             "port": self.port,
